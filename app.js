@@ -521,7 +521,8 @@ function render() {
     updateStats();
 }
 
-function updateLayout(animate = true) {
+// animate: 動かして変える（duration ミリ秒）か、すぐ変えるか
+function updateLayout(animate = true, duration = 600) {
     if (!stations.length || !centerId) return;
     const { k } = computePositions();
     const { width, height } = mapSize();
@@ -536,7 +537,7 @@ function updateLayout(animate = true) {
     const X = s => cx + s.px * scale;
     const Y = s => cy + s.py * scale;
 
-    const dur = animate ? 600 : 0;
+    const dur = animate ? duration : 0;
     const tr = sel => (dur ? sel.transition().duration(dur) : sel);
 
     tr(linkSel)
@@ -1066,11 +1067,41 @@ function init() {
     }
     renderLandmarks();
     updateModeAvailability();
+    // 時間地図・運賃地図で開いたときは、まず実地図（歪み 0%）で描き、指定の歪みまでゆっくり歪める
+    const targetDistortion = distortionStrength;
+    const intro = currentMode !== 'distance' && targetDistortion > 0
+        && !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    if (intro) distortionStrength = 0;
     changeCenter(centerId, false);   // 最初の表示はアニメーションしない
     setView(document.querySelector('input[name="view"]:checked').value);
     if (share.zoom) svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(share.zoom[1], share.zoom[2]).scale(share.zoom[0]));
+    if (intro) {
+        slider.value = 0;
+        document.getElementById('distortionValue').textContent = '0%';
+        setTimeout(() => playIntro(targetDistortion), INTRO_DELAY_MS);   // URL は動き始めてから書く（歪み 0% を書かない）
+        return;
+    }
     shareReady = true;
     writeShareState();
+}
+
+// 開いたときの「実地図 → 歪めた地図」の動き
+const INTRO_DELAY_MS = 500;      // 背景地図が読み込まれるのを少し待つ
+const INTRO_DURATION_MS = 2000;
+
+function playIntro(target) {
+    const slider = document.getElementById('distortion');
+    const label = document.getElementById('distortionValue');
+    distortionStrength = target;
+    shareReady = true;
+    updateLayout(true, INTRO_DURATION_MS);   // 駅・線・背景地図・ランドマークを歪めた位置へ動かす（URL も最終の歪みで書く）
+    // 歪みのスライダーも 0% から一緒に動かす（途中で操作されたらそちらを優先）
+    d3.select(slider).transition('intro').duration(INTRO_DURATION_MS).ease(d3.easeCubicInOut)
+        .tween('value', () => {
+            const i = d3.interpolateNumber(0, target * 100);
+            return t => { slider.value = Math.round(i(t)); label.textContent = slider.value + '%'; };
+        });
+    slider.addEventListener('input', () => d3.select(slider).interrupt('intro'), { once: true });
 }
 
 document.addEventListener('DOMContentLoaded', init);
