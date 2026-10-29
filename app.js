@@ -555,10 +555,9 @@ function updateLayout(animate = true) {
     tr(nodeSel).attr('cx', X).attr('cy', Y);
 
     stations.forEach(s => { s.fx = X(s); s.fy = Y(s); });   // アニメーション後の位置
-    // ランドマークは背景地図と同じ歪め方で置く（駅・地図とずれない）
     const warp = buildWarp(cx, cy, scale);
+    placeLandmarks(k, warp);
     landmarks.forEach(lm => {
-        lm.km = BaseMap.warpKm(warp, lm.lat, lm.lng);   // [東 km, 南 km, 実際の距離 km]
         lm.fx = cx + lm.km[0] * scale;
         lm.fy = cy + lm.km[1] * scale;
     });
@@ -857,6 +856,29 @@ function landmarkAccess(lm) {
     if (best) return best;
     const n = lm.near[0], v = valueAt(n.station);
     return { station: n.station, walk: n.walk, time: null, fare: v ? v.fare : null };
+}
+
+// ランドマークの位置（中心駅からの km 座標 lm.km = [東, 南, 実際の距離]）。駅と同じ決め方で、
+// 方角は実際の方角のまま、中心からの距離を「自分の値（時間＝最寄り駅までの時間＋徒歩、運賃＝その駅の運賃）」にする。
+// 値が分からないランドマークは、背景地図と同じ歪め方の位置に置く
+function placeLandmarks(k, warp) {
+    const center = stations.find(s => s.id === centerId);
+    const t = distortionStrength;
+    landmarks.forEach(lm => {
+        const latMid = (lm.lat + center.lat) / 2 * Math.PI / 180;
+        const gx = (lm.lng - center.lng) * 111.32 * Math.cos(latMid);
+        const gy = -(lm.lat - center.lat) * 110.57;
+        const gr = Math.hypot(gx, gy);
+        const a = currentMode === 'distance' ? null : landmarkAccess(lm);
+        const v = a ? (currentMode === 'time' ? a.time : a.fare) : null;
+        if (currentMode === 'distance' || k == null || v == null) {
+            lm.km = currentMode === 'distance' ? [gx, gy, gr] : BaseMap.warpKm(warp, lm.lat, lm.lng);
+            return;
+        }
+        const r = (1 - t) * gr + t * k * v;
+        const angle = Math.atan2(gy, gx);
+        lm.km = [Math.cos(angle) * r, Math.sin(angle) * r, gr];
+    });
 }
 
 function selectLandmark(d) {
