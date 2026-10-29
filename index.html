@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>時間地図・運賃地図</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="toolbar">
+            <header title="中心駅からの所要時間・運賃で駅の位置を歪めて表示（方角は地図と同じ）">
+                <h1>時間地図・運賃地図</h1>
+            </header>
+
+            <div class="control-group">
+                <span id="modeLabel">モード</span>
+                <div id="mode" class="segmented" role="radiogroup" aria-labelledby="modeLabel">
+                    <label><input type="radio" name="mode" value="distance" checked><span>実地図</span></label>
+                    <label><input type="radio" name="mode" value="time"><span>時間地図</span></label>
+                    <label><input type="radio" name="mode" value="cost"><span>運賃地図</span></label>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label for="distortion">歪み</label>
+                <input type="range" id="distortion" min="0" max="100" value="100">
+                <span id="distortionValue">100%</span>
+            </div>
+
+            <div class="control-group">
+                <label for="centerStation">中心駅</label>
+                <select id="centerStation"></select>
+            </div>
+
+            <div class="control-group">
+                <span id="viewLabel">表示</span>
+                <div id="view" class="segmented" role="radiogroup" aria-labelledby="viewLabel">
+                    <label><input type="radio" name="view" value="2d" checked><span>2D</span></label>
+                    <label><input type="radio" name="view" value="3d"><span>3D</span></label>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label for="basemapOpacity">背景地図</label>
+                <input type="range" id="basemapOpacity" min="0" max="100" value="50">
+                <span id="basemapOpacityValue" class="range-value">50%</span>
+            </div>
+
+            <button id="landmarkBtn" type="button" aria-expanded="false" aria-controls="landmarkPanel">ランドマーク</button>
+            <button id="shareBtn" type="button" title="今の表示（モード・中心駅・拡大など）の URL をコピー">共有</button>
+            <button id="resetBtn">リセット</button>
+        </div>
+
+        <div class="stats">
+            <span class="stat-item">駅数 <strong id="stationCount">0</strong></span>
+            <span class="stat-item">路線数 <strong id="lineCount">0</strong></span>
+            <span id="status" class="status"></span>
+        </div>
+
+        <div class="map-wrap">
+            <div id="map"></div>
+            <!-- ランドマーク（Google マイマップの地点）の設定。landmarks.js が中身を作る -->
+            <div id="landmarkPanel" class="landmark-panel" hidden></div>
+            <div class="legend">
+                <div id="legendItems" class="legend-items"></div>
+                <div class="legend-item"><div class="legend-color" style="background:#bbb"></div><span>データなし（実際の位置）</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <!-- scrape.js で生成したデータ（駅・隣接関係） -->
+    <script src="data/network.js"></script>
+    <!-- 時刻表・運賃表から生成したデータ（build_keikyu.py / build_yokohama.py / build_seaside.py / build_minatomirai.py / build_tokyu.py / build_sotetsu.py / build_jr.py） -->
+    <script src="data/keikyu.js"></script>
+    <script src="data/yokohama.js"></script>
+    <script src="data/seaside.js"></script>
+    <script src="data/minatomirai.js"></script>
+    <script src="data/tokyu.js"></script>
+    <script src="data/sotetsu.js"></script>
+    <script src="data/jr.js"></script>
+    <!-- ランドマークの既定のマイマップ（ユーザーが編集） -->
+    <script src="data/landmark_presets.js"></script>
+    <!-- 既定のマイマップの KML（build_landmarks.py で取り込み。index.html を直接開いたときに使う） -->
+    <script src="data/landmarks_kml.js"></script>
+    <!-- 3D 表示: three.js（線の太さを出すため Line2 系の拡張も使う） -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/lines/LineSegmentsGeometry.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/lines/LineMaterial.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/lines/LineSegments2.js"></script>
+    <script src="basemap.js"></script>
+    <script src="view3d.js"></script>
+    <script src="landmarks.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

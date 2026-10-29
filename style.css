@@ -1,0 +1,292 @@
+/* 一画面に収める: 上に操作バーと状態表示、残りの高さをすべて地図に使う */
+html, body { height: 100%; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    margin: 0;
+    background: #f4f4f9;
+    color: #333;
+    overflow: hidden;
+}
+
+.container {
+    height: 100vh;
+    height: 100dvh;
+    box-sizing: border-box;
+    padding: 8px 12px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.toolbar {
+    display: flex;
+    gap: 6px 16px;
+    align-items: center;
+    flex-wrap: wrap;
+    background: #fff;
+    padding: 6px 12px;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    font-size: 13px;
+}
+
+header h1 {
+    margin: 0;
+    font-size: 17px;
+    white-space: nowrap;
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+.control-group > span:first-child, .control-group > label:first-child { color: #555; }
+
+.control-group select {
+    padding: 3px 6px;
+    font-size: 13px;
+    max-width: 11em;
+}
+.control-group input[type="range"] { width: 110px; }
+#distortionValue, #basemapOpacityValue { min-width: 2.8em; }
+#basemapOpacity { width: 80px; }
+
+/* 歪めモード: 3 つの選択肢を並べて常に表示 */
+.segmented {
+    display: inline-flex;
+    border: 1px solid #007bff;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.segmented label { cursor: pointer; }
+.segmented input { position: absolute; opacity: 0; pointer-events: none; }
+.segmented span {
+    display: block;
+    padding: 3px 12px;
+    color: #007bff;
+    background: #fff;
+}
+.segmented label + label span { border-left: 1px solid #007bff; }
+.segmented label:hover span { background: #e8f1ff; }
+.segmented input:checked + span { background: #007bff; color: #fff; }
+.segmented input:focus-visible + span { outline: 2px solid #80b6ff; outline-offset: -3px; }
+
+button {
+    padding: 4px 12px;
+    background: #007bff;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+button:hover {
+    background: #0056b3;
+}
+
+.stats {
+    display: flex;
+    gap: 14px;
+    align-items: baseline;
+    padding: 0 4px;
+    font-size: 12px;
+    color: #555;
+    min-width: 0;
+}
+.stats .status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 地図は残りの高さいっぱい */
+.map-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 240px;
+}
+#map {
+    position: absolute;
+    inset: 0;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    overflow: hidden;
+}
+
+/* 背景地図（basemap.js）は SVG の下に重ねる */
+#map .basemap { position: absolute; left: 0; top: 0; pointer-events: none; }
+#map svg { position: relative; }
+/* 3D 表示（view3d.js） */
+#view3d { position: absolute; inset: 0; }
+#view3d canvas { display: block; }
+.labels3d { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.label3d, .ring3d, .axis3d {
+    position: absolute; left: 0; top: 0; white-space: nowrap; user-select: none;
+    text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 2px #fff;
+}
+.label3d { font-size: 12px; color: #333; pointer-events: auto; cursor: pointer; }
+.label3d.transfer { font-weight: bold; font-size: 14px; }   /* 乗換駅 */
+.label3d.center { font-weight: bold; font-size: 15px; }
+.ring3d { font-size: 11px; color: #666; }
+.axis3d { font-size: 11px; color: #222; }
+.axis3d.axis-title { font-weight: bold; }
+
+#map .attribution {
+    z-index: 1;
+    position: absolute; right: 6px; bottom: 4px;
+    font-size: 11px; color: #555; background: rgba(255, 255, 255, 0.75);
+    padding: 1px 6px; border-radius: 3px;
+}
+#map .attribution a { color: inherit; }
+
+/* 凡例: 地図の左下に重ねる */
+.legend {
+    position: absolute;
+    left: 8px;
+    bottom: 8px;
+    max-width: calc(100% - 200px);
+    z-index: 2;
+    display: flex;
+    gap: 4px 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    background: rgba(255, 255, 255, 0.88);
+    padding: 4px 10px;
+    border-radius: 6px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+    pointer-events: none;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+/* 狭い画面: 凡例は地図の幅いっぱいにして、出典表示の上に置く */
+@media (max-width: 640px) {
+    .container { padding: 6px 8px 8px; }
+    .toolbar { padding: 6px 8px; gap: 6px 12px; }
+    .legend { max-width: none; right: 8px; bottom: 26px; }
+}
+
+/* 凡例の項目はボタン（クリックで路線の表示・非表示を切り替え） */
+.legend-toggle {
+    pointer-events: auto;
+    background: none; border: none; padding: 1px 2px; margin: 0;
+    color: inherit; font-family: inherit; cursor: pointer; border-radius: 3px;   /* 文字の大きさは .legend-item のまま */
+}
+.legend-toggle:hover { background: rgba(0, 0, 0, 0.06); }
+.legend-toggle:focus-visible { outline: 2px solid #80b6ff; }
+.legend-toggle.off { opacity: 0.4; }
+.legend-toggle.off span { text-decoration: line-through; }
+
+.legend-color {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+}
+.legend-walk { width: 16px; border-top: 2px dotted #777; }
+
+.link {
+    stroke-opacity: 0.6;
+}
+
+.station-label {
+    font-size: calc(11px * var(--text-scale, 1));
+    fill: #333;
+    cursor: pointer;
+    user-select: none;   /* クリックで文字が選択されないように */
+}
+
+.tooltip {
+    position: absolute;
+    background: rgba(0, 0, 0, 0.85);
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 1000;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+
+.tooltip-title {
+    font-weight: bold;
+    margin-bottom: 4px;
+    font-size: 13px;
+}
+.status { font-weight: normal; font-size: 13px; }
+.status-info { color: #555; }
+.status-ok { color: #2e7d32; }
+.status-warn { color: #b26a00; }
+.status-error { color: #c0392b; }
+
+.legend-items { display: flex; gap: 4px 12px; flex-wrap: wrap; }
+
+.station { cursor: pointer; }
+.station.center { stroke: #222; stroke-width: calc(2.5px * var(--text-scale, 1)); }
+/* --text-scale は app.js がズーム倍率に応じて設定する */
+.station-label.transfer { font-weight: bold; font-size: calc(13px * var(--text-scale, 1)); }   /* 乗換駅 */
+.station-label.center { font-weight: bold; font-size: calc(14px * var(--text-scale, 1)); }
+.station-label { paint-order: stroke; stroke: #fff; stroke-width: calc(3px * var(--text-scale, 1)); }
+
+.rings circle {
+    fill: none; stroke: #999; stroke-opacity: 0.6;
+    stroke-width: calc(1px * var(--text-scale, 1));
+    stroke-dasharray: calc(3px * var(--text-scale, 1)) calc(4px * var(--text-scale, 1));
+}
+.rings text { font-size: calc(11px * var(--text-scale, 1)); fill: #888; }
+
+.tooltip-hint { margin-top: 4px; color: #aaa; font-size: 11px; }
+
+/* --- ランドマーク（landmarks.js のパネルと、地図上のアイコン） --- */
+.landmark-panel {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 3;
+    width: min(360px, calc(100% - 16px));
+    max-height: calc(100% - 16px);
+    overflow: auto;
+    box-sizing: border-box;
+    background: rgba(255, 255, 255, 0.97);
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    padding: 8px 10px;
+    font-size: 12px;
+}
+.landmark-panel[hidden] { display: none; }
+.landmark-panel.lm-drop { outline: 2px dashed #007bff; }
+.lm-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
+.lm-hint { color: #777; font-size: 11px; }
+.lm-empty { color: #777; padding: 4px 0 6px; }
+.lm-map { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-top: 1px solid #eee; }
+.lm-map:first-child { border-top: none; }
+.lm-map-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.lm-map-name > span:nth-child(3) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lm-swatch { width: 10px; height: 10px; transform: rotate(45deg); flex: none; }
+.lm-count { color: #888; font-size: 11px; white-space: nowrap; }
+.lm-error { color: #c0392b; }
+.lm-error-msg { font-size: 11px; padding: 0 0 4px 20px; }
+.lm-actions { display: flex; gap: 4px; flex: none; }
+.lm-layers { padding: 0 0 4px 22px; }
+.lm-layer { display: flex; gap: 5px; align-items: center; cursor: pointer; }
+.lm-add { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.lm-url { flex: 1; min-width: 0; padding: 3px 6px; font-size: 12px; }
+button.lm-small { padding: 2px 8px; font-size: 11px; }
+button.lm-remove { background: #868e96; }
+button.lm-remove:hover { background: #5c636a; }
+
+.landmark { cursor: pointer; stroke: #222; }
+.landmark-label {
+    font-size: calc(10px * var(--text-scale, 1));
+    fill: #444;
+    font-style: italic;
+    paint-order: stroke; stroke: #fff; stroke-width: calc(3px * var(--text-scale, 1));
+    cursor: pointer;
+    user-select: none;
+}
+.label3d.landmark3d { font-size: 11px; font-style: italic; color: #444; }
