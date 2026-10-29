@@ -187,8 +187,10 @@ const View3D = (() => {
     function rebuildLandmarks(landmarks, duration, a) {
         const prev = new Map(lmNodes.map(n => [n.d.key, n.from.clone().lerp(n.to, a)]));
         lmNodes.forEach(n => { scene.remove(n.mesh); n.mesh.geometry.dispose(); n.label.remove(); });
-        const geo = new THREE.ConeGeometry(1, 1.8, 4);
-        geo.rotateX(Math.PI / 2);   // 先を上（z）に
+        // ピンのように、先を下（地点）に向けた四角錐
+        const geo = new THREE.ConeGeometry(1, 2.4, 4);
+        geo.rotateX(-Math.PI / 2);
+        geo.translate(0, 0, 1.2);
         lmNodes = landmarks.filter(d => d.km).map(d => {
             const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: d.color }));
             scene.add(mesh);
@@ -362,7 +364,7 @@ const View3D = (() => {
         lmNodes.forEach(n => {
             n.cur = n.from.clone().lerp(n.to, a);
             n.mesh.position.copy(n.cur);
-            n.mesh.scale.setScalar(camera.position.distanceTo(n.cur) * NODE_SIZE * 1.6);   // 駅の球より少し大きく
+            n.mesh.scale.setScalar(camera.position.distanceTo(n.cur) * NODE_SIZE * 3.2);   // 駅の球より大きく目立たせる
         });
         // 線路
         if (links) {

@@ -286,7 +286,8 @@ button.lm-small { padding: 2px 8px; font-size: 11px; }
 button.lm-remove { background: #868e96; }
 button.lm-remove:hover { background: #5c636a; }
 
-.landmark { cursor: pointer; stroke: #222; }
+.landmark { cursor: pointer; stroke: #fff; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.45)); }
+.landmark .pin-dot { fill: #fff; stroke: none; }
 .landmark-label {
     font-size: calc(10px * var(--text-scale, 1));
     fill: #444;

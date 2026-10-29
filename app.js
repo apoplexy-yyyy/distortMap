@@ -617,7 +617,7 @@ function applyZoomScale() {
     if (!nodeSel) return;
     nodeSel.attr('r', d => nodeRadius(d) * zoomScale).attr('stroke-width', 1.5 * zoomScale);
     linkSel.attr('stroke-width', 3 * zoomScale);
-    if (landmarkSel) landmarkSel.select('path').attr('transform', `scale(${zoomScale})`);
+    if (landmarkSel) landmarkSel.select('g.pin').attr('transform', `scale(${zoomScale})`);
 }
 
 const nodeRadius = d => (d.id === centerId ? 9 : 5);
@@ -651,10 +651,11 @@ function placeLabels() {
     });
     const placed = [];
     // 点 d（半径 radius の記号）の周りの空いている位置に名前を置く。置けなければ d.lx = null
-    const place = (d, radius, avoidNodes) => {
+    // dy … 記号の中心が点より上にあるとき（ランドマークのピンの頭）の高さ
+    const place = (d, radius, avoidNodes, dy = 0) => {
         const { w, h } = labelSize(d);
         const lw = w * sz, lh = h * sz, r = radius * sz + gap;
-        const x = d.fx * k, y = d.fy * k;
+        const x = d.fx * k, y = d.fy * k - dy * sz;
         d.lx = d.ly = null;
         for (const [hx, vy] of LABEL_CANDIDATES) {
             // ラベルの左端と縦中央（斜めの位置は丸に沿うよう少し内側に寄せる）
@@ -675,7 +676,7 @@ function placeLabels() {
         place(d, nodeRadius(d), d.id !== centerId);   // 中心駅の名前は必ず出す（周りの駅の丸に重なってもよい）
     });
     // ランドマークの名前は駅名より後（空いているところだけ）
-    landmarks.forEach(d => (d.fx == null ? (d.lx = d.ly = null) : place(d, LANDMARK_RADIUS, true)));
+    landmarks.forEach(d => (d.fx == null ? (d.lx = d.ly = null) : place(d, PIN_HEAD_R, true, PIN_HEAD_Y)));
 }
 
 // 歪み 100% のときは「中心から○分 / ○円」の同心円を描く
@@ -825,7 +826,11 @@ function selectCenter(d) {
 
 // --- 9.5 ランドマーク -------------------------------------------------
 // 近い駅まで歩くとして、中心駅からの時間・運賃を出す
-const LANDMARK_RADIUS = 6;          // 地図上の記号の大きさ（駅の丸の半径に相当）
+// 地図上の記号: Google マップのようなピン（先が地点。頭の円の半径と、頭の中心の地点からの高さ）
+const PIN_HEAD_R = 7;
+const PIN_HEAD_Y = 15;
+const PIN_PATH = `M0,0 C-2,-5 ${-PIN_HEAD_R},-9 ${-PIN_HEAD_R},${-PIN_HEAD_Y} `
+    + `A${PIN_HEAD_R},${PIN_HEAD_R} 0 1,1 ${PIN_HEAD_R},${-PIN_HEAD_Y} C${PIN_HEAD_R},-9 2,-5 0,0 Z`;
 const WALK_NEAR_KM = 1.5;           // この距離（直線）までの駅を、歩いて行く駅の候補にする
 const WALK_DETOUR = 1.3;            // 道なりの距離 ≒ 直線距離 × 1.3
 const WALK_M_PER_MIN = 80;
@@ -899,10 +904,12 @@ function renderLandmarks() {
         .on('dblclick', e => e.stopPropagation());
     landmarkSel = on(rootLayer.select('.landmarks').selectAll('g.landmark').data(landmarks, d => d.key).join(enter => {
         const g = enter.append('g').attr('class', 'landmark');
-        g.append('path').attr('d', d3.symbol(d3.symbolDiamond, LANDMARK_RADIUS * LANDMARK_RADIUS * 2.2)());
+        const pin = g.append('g').attr('class', 'pin');   // 拡大しても画面上の大きさを保つため、この中だけ縮める
+        pin.append('path').attr('d', PIN_PATH);
+        pin.append('circle').attr('class', 'pin-dot').attr('cy', -PIN_HEAD_Y).attr('r', 2.6);
         return g;
     }));
-    landmarkSel.select('path').attr('fill', d => d.color).attr('stroke-width', 1.5);
+    landmarkSel.select('path').attr('fill', d => d.color).attr('stroke-width', 1.2);
     landmarkLabelSel = on(rootLayer.select('.landmark-labels').selectAll('text').data(landmarks, d => d.key).join('text')
         .attr('class', 'landmark-label').attr('dy', '0.35em').text(d => d.name));
     applyZoomScale();
