@@ -172,10 +172,46 @@ button:hover {
 }
 
 /* 狭い画面: 凡例は地図の幅いっぱいにして、出典表示の上に置く */
+/* 操作バーのボタン（ランドマーク・共有・リセット） */
+.toolbar-buttons { display: flex; gap: 6px; }
+/* スマホ用のボタン（幅 640px より広いときは出さない） */
+.menu-btn, .legend-btn { display: none; }
+
+/* --- スマホ（幅 640px 以下） ---
+   操作バーは「タイトル・モード・中心駅」だけ出し、他は「設定」ボタンで開く。凡例は「凡例」ボタンで開く */
 @media (max-width: 640px) {
-    .container { padding: 6px 8px 8px; }
-    .toolbar { padding: 6px 8px; gap: 6px 12px; }
-    .legend { max-width: none; right: 8px; bottom: 26px; }
+    .container { padding: 4px 6px 6px; gap: 4px; }
+    .toolbar { padding: 6px 8px; gap: 6px 8px; font-size: 13px; }
+    .toolbar header { flex: 1; min-width: 0; }
+    header h1 { font-size: 15px; }
+    .menu-btn { display: inline-block; padding: 4px 10px; }
+    .menu-btn[aria-expanded="true"] { background: #0056b3; }
+    .toolbar:not(.open) .secondary { display: none; }
+    /* モードは横いっぱい、中心駅はその下 */
+    .toolbar .control-group:first-of-type { flex: 1 1 100%; }
+    .toolbar .control-group > span:first-child, .toolbar .control-group > label:first-child { display: none; }
+    .toolbar .control-group.secondary > span:first-child, .toolbar .control-group.secondary > label:first-child { display: inline; }
+    #mode { flex: 1; }
+    #mode label { flex: 1; text-align: center; }
+    .segmented span { padding: 5px 6px; }
+    .control-group select { max-width: none; flex: 1; font-size: 14px; padding: 4px 6px; }
+    .toolbar .control-group:has(#centerStation) { flex: 1 1 100%; }
+    .toolbar.open .secondary { flex: 1 1 100%; }
+    .toolbar-buttons button { flex: 1; padding: 6px 8px; }
+    .control-group input[type="range"], #basemapOpacity { flex: 1; width: auto; }
+    /* 状態表示は 1 行だけ（駅数・路線数は出さない） */
+    .stats { font-size: 11px; padding: 0 2px; }
+    .stats .stat-item { display: none; }
+    .map-wrap { min-height: 200px; }
+    /* 凡例: 初めは「凡例」ボタンだけ */
+    .legend { max-width: none; right: auto; left: 6px; bottom: 22px; padding: 3px 6px; max-height: 45%; overflow: auto; pointer-events: auto; }
+    .legend-btn { display: inline-block; padding: 3px 10px; font-size: 12px; }
+    .legend:not(.open) .legend-items, .legend:not(.open) .legend-missing { display: none; }
+    .legend.open { right: 6px; }
+    /* ランドマークの表・設定パネルは横いっぱい */
+    .landmark-ranking { left: 6px; right: 6px; top: 6px; width: auto; max-height: 45%; }
+    .landmark-panel { left: 6px; right: 6px; top: 6px; width: auto; }
+    .tooltip { max-width: calc(100vw - 24px); }
 }
 
 /* 凡例の項目はボタン（クリックで路線の表示・非表示を切り替え） */

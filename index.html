@@ -8,11 +8,13 @@
 </head>
 <body>
     <div class="container">
-        <div class="toolbar">
+        <div class="toolbar" id="toolbar">
             <header title="中心駅からの所要時間・運賃で駅の位置を歪めて表示（方角は地図と同じ）">
                 <!-- バージョン名は更新したらここを書き換える -->
-                <h1>時間地図・運賃地図<small class="app-version">v1.0.1</small></h1>
+                <h1>時間地図・運賃地図<small class="app-version">v1.0.2</small></h1>
             </header>
+            <!-- スマホ（幅 640px 以下）だけ表示。押すと「設定」の項目を開く -->
+            <button id="menuBtn" class="menu-btn" type="button" aria-expanded="false" aria-controls="toolbar">設定</button>
 
             <div class="control-group">
                 <span id="modeLabel">モード</span>
@@ -23,7 +25,7 @@
                 </div>
             </div>
 
-            <div class="control-group">
+            <div class="control-group secondary">
                 <label for="distortion">歪み</label>
                 <input type="range" id="distortion" min="0" max="100" value="100">
                 <span id="distortionValue">100%</span>
@@ -34,7 +36,7 @@
                 <select id="centerStation"></select>
             </div>
 
-            <div class="control-group">
+            <div class="control-group secondary">
                 <span id="viewLabel">表示</span>
                 <div id="view" class="segmented" role="radiogroup" aria-labelledby="viewLabel">
                     <label><input type="radio" name="view" value="2d" checked><span>2D</span></label>
@@ -42,15 +44,17 @@
                 </div>
             </div>
 
-            <div class="control-group">
+            <div class="control-group secondary">
                 <label for="basemapOpacity">背景地図</label>
                 <input type="range" id="basemapOpacity" min="0" max="100" value="50">
                 <span id="basemapOpacityValue" class="range-value">50%</span>
             </div>
 
-            <button id="landmarkBtn" type="button" aria-expanded="false" aria-controls="landmarkPanel">ランドマーク</button>
-            <button id="shareBtn" type="button" title="今の表示（モード・中心駅・拡大など）の URL をコピー">共有</button>
-            <button id="resetBtn">リセット</button>
+            <div class="toolbar-buttons secondary">
+                <button id="landmarkBtn" type="button" aria-expanded="false" aria-controls="landmarkPanel">ランドマーク</button>
+                <button id="shareBtn" type="button" title="今の表示（モード・中心駅・拡大など）の URL をコピー">共有</button>
+                <button id="resetBtn">リセット</button>
+            </div>
         </div>
 
         <div class="stats">
@@ -65,9 +69,11 @@
             <div id="landmarkPanel" class="landmark-panel" hidden></div>
             <!-- 表示中のランドマークを中心駅から近い順に並べた表（app.js が中身を作る） -->
             <div id="landmarkRanking" class="landmark-ranking" hidden></div>
-            <div class="legend">
+            <div class="legend" id="legend">
+                <!-- スマホだけ表示。押すと凡例を開く -->
+                <button id="legendBtn" class="legend-btn" type="button" aria-expanded="false" aria-controls="legend">凡例</button>
                 <div id="legendItems" class="legend-items"></div>
-                <div class="legend-item"><div class="legend-color" style="background:#bbb"></div><span>データなし（実際の位置）</span></div>
+                <div class="legend-item legend-missing"><div class="legend-color" style="background:#bbb"></div><span>データなし（実際の位置）</span></div>
             </div>
         </div>
     </div>

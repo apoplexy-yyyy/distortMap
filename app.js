@@ -504,7 +504,7 @@ function render() {
         .on('mouseover', showTooltip)
         .on('mousemove', moveTooltip)
         .on('mouseout', hideTooltip)
-        .on('click', (e, d) => selectCenter(d));
+        .on('click', (e, d) => tapOrSelect(e, d, showTooltip, selectCenter));
 
     labelSel = rootLayer.select('.labels').selectAll('text').data(stations, d => d.id).join('text')
         .attr('class', 'station-label')
@@ -514,7 +514,7 @@ function render() {
         .on('mouseover', showTooltip)
         .on('mousemove', moveTooltip)
         .on('mouseout', hideTooltip)
-        .on('click', (e, d) => selectCenter(d))
+        .on('click', (e, d) => tapOrSelect(e, d, showTooltip, selectCenter))
         .on('dblclick', e => e.stopPropagation());   // 駅名の上では地図のダブルクリック拡大をしない
 
     updateLegend();
@@ -727,11 +727,31 @@ function showTooltip(event, d) {
         <div class="tooltip-title">${d.name}</div>
         <div class="tooltip-info"><strong>路線:</strong> ${displayLines(d.lines).join('・')}</div>
         ${info}
-        <div class="tooltip-hint">駅または駅名のクリックで中心駅に設定</div>`);
+        <div class="tooltip-hint">${IS_TOUCH ? 'もう一度タップで中心駅に設定' : '駅または駅名のクリックで中心駅に設定'}</div>`);
     moveTooltip(event);
 }
 function moveTooltip(event) {
-    d3.select('.tooltip').style('left', (event.pageX + 12) + 'px').style('top', (event.pageY - 12) + 'px');
+    const tip = d3.select('.tooltip');
+    if (tip.empty()) return;
+    // 画面の右端・下端からはみ出さないように（スマホでは特に）
+    const { width, height } = tip.node().getBoundingClientRect();
+    const left = Math.max(4, Math.min(event.pageX + 12, window.scrollX + window.innerWidth - width - 4));
+    const top = Math.max(4, Math.min(event.pageY - 12, window.scrollY + window.innerHeight - height - 4));
+    tip.style('left', left + 'px').style('top', top + 'px');
+}
+
+// タッチ操作（マウスのない端末）では、1 回目のタップで情報を出し、同じものをもう一度タップしたら中心駅にする
+const IS_TOUCH = window.matchMedia && window.matchMedia('(hover: none)').matches;
+let tapPreview = null;
+function tapOrSelect(event, d, show, select) {
+    if (IS_TOUCH && tapPreview !== d) {
+        tapPreview = d;
+        show(event, d);
+        return;
+    }
+    tapPreview = null;
+    hideTooltip();
+    select(d);
 }
 function hideTooltip() { d3.selectAll('.tooltip').remove(); }
 const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -752,7 +772,7 @@ function showLandmarkTooltip(event, d) {
         ${where ? `<div class="tooltip-info">${where}</div>` : ''}
         ${d.note ? `<div class="tooltip-hint">${escapeHtml(d.note)}</div>` : ''}
         ${info}
-        ${a ? `<div class="tooltip-hint">クリックで${a.station.name}を中心駅に設定</div>` : ''}`);
+        ${a ? `<div class="tooltip-hint">${IS_TOUCH ? 'もう一度タップで' : 'クリックで'}${a.station.name}を中心駅に設定</div>` : ''}`);
     moveTooltip(event);
 }
 
@@ -890,7 +910,7 @@ function placeLandmarks(k, warp) {
 
 // 表示中のランドマークを中心駅から近い順に並べた表（右上）。「近い」はモードに合わせる:
 // 時間地図 = 所要時間（電車＋徒歩）、運賃地図 = 運賃（同じなら時間）、実地図 = 直線距離
-let rankingCollapsed = false;
+let rankingCollapsed = window.matchMedia && window.matchMedia('(max-width: 640px)').matches;   // スマホでは初めは閉じる
 
 function renderLandmarkRanking() {
     const box = d3.select('#landmarkRanking');
@@ -950,7 +970,7 @@ function renderLandmarks() {
         .on('mouseover', showLandmarkTooltip)
         .on('mousemove', moveTooltip)
         .on('mouseout', hideTooltip)
-        .on('click', (e, d) => selectLandmark(d))
+        .on('click', (e, d) => tapOrSelect(e, d, showLandmarkTooltip, selectLandmark))
         .on('dblclick', e => e.stopPropagation());
     landmarkSel = on(rootLayer.select('.landmarks').selectAll('g.landmark').data(landmarks, d => d.key).join(enter => {
         const g = enter.append('g').attr('class', 'landmark');
@@ -1013,6 +1033,20 @@ function setupControls() {
     });
 
     document.getElementById('shareBtn').addEventListener('click', copyShareUrl);
+
+    // スマホ: 「設定」で操作バーの残りの項目、「凡例」で凡例を開く（地図の高さが変わるので描き直す）
+    const toggleOpen = (btn, el) => btn.addEventListener('click', () => {
+        const open = !el.classList.contains('open');
+        el.classList.toggle('open', open);
+        btn.setAttribute('aria-expanded', String(open));
+        window.dispatchEvent(new Event('resize'));
+    });
+    toggleOpen(document.getElementById('menuBtn'), document.getElementById('toolbar'));
+    toggleOpen(document.getElementById('legendBtn'), document.getElementById('legend'));
+    // 地図の何もないところをタップしたら、出していた情報を消す
+    svg.on('click.tooltip', e => {
+        if (!e.target.closest('.station, .station-label, .landmark, .landmark-label')) { tapPreview = null; hideTooltip(); }
+    });
     // 共有 URL を同じタブに貼って開き直したときは、その表示にする
     window.addEventListener('hashchange', () => location.reload());
 
