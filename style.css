@@ -297,3 +297,39 @@ button.lm-remove:hover { background: #5c636a; }
     user-select: none;
 }
 .label3d.landmark3d { font-size: 11px; font-style: italic; color: #444; }
+
+/* ランドマークの近い順の表（地図の右上。設定パネルを開くとその下に隠れる） */
+.landmark-ranking {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 2;
+    width: min(260px, calc(100% - 16px));
+    max-height: min(55%, 420px);
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    background: rgba(255, 255, 255, 0.94);
+    border-radius: 6px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+    font-size: 12px;
+}
+.landmark-ranking[hidden] { display: none; }
+.lr-head {
+    display: flex; align-items: baseline; gap: 6px;
+    padding: 6px 8px 4px; border-bottom: 1px solid #eee; cursor: pointer; user-select: none;
+}
+.lr-head strong { font-size: 12px; }
+.lr-basis { color: #777; font-size: 11px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lr-toggle { color: #777; font-size: 11px; }
+.lr-list { margin: 0; padding: 2px 0; list-style: none; overflow: auto; }
+.landmark-ranking.lr-collapsed .lr-list { display: none; }
+.lr-row { display: grid; grid-template-columns: 1.8em 1fr auto; gap: 0 6px; padding: 3px 8px; cursor: pointer; }
+.lr-row:hover { background: #f1f5ff; }
+.lr-rank { color: #888; text-align: right; }
+.lr-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lr-name i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
+.lr-value { font-weight: bold; white-space: nowrap; text-align: right; }
+.lr-sub { grid-column: 2 / 4; color: #888; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.landmark.hl .pin path { stroke: #222; stroke-width: 2; }
+.landmark.hl { filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.6)); }

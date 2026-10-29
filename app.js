@@ -589,6 +589,7 @@ function updateLayout(animate = true, duration = 600) {
             labelOrder: labelPriority, landmarks,
         });
     }
+    renderLandmarkRanking();
     writeShareState();
 }
 
@@ -887,6 +888,55 @@ function placeLandmarks(k, warp) {
     });
 }
 
+// 表示中のランドマークを中心駅から近い順に並べた表（右上）。「近い」はモードに合わせる:
+// 時間地図 = 所要時間（電車＋徒歩）、運賃地図 = 運賃（同じなら時間）、実地図 = 直線距離
+let rankingCollapsed = false;
+
+function renderLandmarkRanking() {
+    const box = d3.select('#landmarkRanking');
+    if (box.empty()) return;
+    if (!landmarks.length) { box.attr('hidden', true); return; }
+    const center = stations.find(s => s.id === centerId);
+    const rows = landmarks.map(lm => {
+        const a = landmarkAccess(lm);
+        const km = lm.km ? lm.km[2] : kmBetween(lm, center);
+        return { lm, a, km };
+    });
+    const big = 1e9;
+    const key = currentMode === 'time' ? r => [r.a && r.a.time != null ? r.a.time : big, r.km]
+        : currentMode === 'cost' ? r => [r.a && r.a.fare != null ? r.a.fare : big, r.a && r.a.time != null ? r.a.time : big]
+            : r => [r.km, 0];
+    rows.sort((x, y) => { const a = key(x), b = key(y); return a[0] - b[0] || a[1] - b[1]; });
+    const fmtTime = a => (a && a.time != null ? `${Math.round(a.time)}分` : '—');
+    const fmtFare = a => (a && a.fare != null ? `${a.fare}円` : '—');
+    const main = r => (currentMode === 'time' ? fmtTime(r.a) : currentMode === 'cost' ? fmtFare(r.a) : `${r.km.toFixed(1)}km`);
+    const sub = r => {
+        const parts = [currentMode === 'time' ? fmtFare(r.a) : fmtTime(r.a)];
+        if (currentMode !== 'distance') parts.push(`${r.km.toFixed(1)}km`);
+        if (r.a) parts.push(`${r.a.station.name}${r.a.station.id === centerId ? '（中心駅）' : '駅'}から徒歩${Math.round(r.a.walk)}分`);
+        return parts.join(' ・ ');
+    };
+    const basis = { time: '所要時間', cost: '運賃', distance: '直線距離' }[currentMode];
+
+    box.attr('hidden', null).classed('lr-collapsed', rankingCollapsed).html('');
+    const head = box.append('div').attr('class', 'lr-head').attr('title', 'クリックで開く・閉じる')
+        .on('click', () => { rankingCollapsed = !rankingCollapsed; renderLandmarkRanking(); });
+    head.append('strong').text('近いランドマーク');
+    head.append('span').attr('class', 'lr-basis').text(`${center.name}から・${basis}順（${rows.length}件）`);
+    head.append('span').attr('class', 'lr-toggle').text(rankingCollapsed ? '▼' : '▲');
+    const li = box.append('ol').attr('class', 'lr-list').selectAll('li').data(rows).join('li').attr('class', 'lr-row')
+        .attr('title', r => `クリックで${r.a ? r.a.station.name : '最寄り駅'}を中心駅に設定`)
+        .on('mouseenter', (e, r) => landmarkSel && landmarkSel.classed('hl', d => d === r.lm))
+        .on('mouseleave', () => landmarkSel && landmarkSel.classed('hl', false))
+        .on('click', (e, r) => selectLandmark(r.lm));
+    li.append('span').attr('class', 'lr-rank').text((r, i) => i + 1);
+    const name = li.append('span').attr('class', 'lr-name').attr('title', r => r.lm.name);
+    name.append('i').style('background', r => r.lm.color);
+    name.append('span').text(r => r.lm.name);
+    li.append('span').attr('class', 'lr-value').text(main);
+    li.append('span').attr('class', 'lr-sub').text(sub);
+}
+
 function selectLandmark(d) {
     const a = landmarkAccess(d);
     if (a) selectCenter(a.station);
@@ -913,6 +963,7 @@ function renderLandmarks() {
     landmarkLabelSel = on(rootLayer.select('.landmark-labels').selectAll('text').data(landmarks, d => d.key).join('text')
         .attr('class', 'landmark-label').attr('dy', '0.35em').text(d => d.name));
     applyZoomScale();
+    if (!landmarks.length) renderLandmarkRanking();
 }
 
 function setupControls() {
