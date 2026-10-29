@@ -20,6 +20,7 @@ jr_html/
 jr_pdf/
 jr_wiki/
 
-# 取得したデータから生成したファイル（各スクリプトで作る。README の「データの準備」を参照）
-data/*
-!data/landmark_presets.js
+# 生成データ（data/*.js）は GitHub Pages で動かすためにリポジトリに入れる。
+# ただし乗換案内の検索結果（scrape.js の旧機能。アプリでは使っていない）と、その解析用のページは入れない
+data/routes.js
+data/debug/

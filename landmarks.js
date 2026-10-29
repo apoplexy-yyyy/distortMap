@@ -96,7 +96,10 @@ const LandmarkStore = (() => {
         if (res.status === 404 && bundled(mid)) return bundled(mid);   // serve.py でないサーバーで開いているとき
         const text = await res.text();
         if (res.status === 404 && !/マイマップ/.test(text)) {
-            throw new Error('マイマップを取り次ぐサーバーではありません。python serve.py で開いてください');
+            // GitHub Pages など、ファイルを置くだけのサーバーで開いているとき
+            throw new Error('このページ（GitHub Pages など）ではマイマップを URL から読めません。'
+                + 'data/landmark_presets.js に登録して python build_landmarks.py で取り込むか、'
+                + '書き出した KML ファイルを読み込んでください（手元では python serve.py で開くと URL から読めます）');
         }
         if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
         return text;
