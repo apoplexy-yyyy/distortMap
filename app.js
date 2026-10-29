@@ -940,7 +940,7 @@ function renderLandmarkRanking() {
 
     box.attr('hidden', null).classed('lr-collapsed', rankingCollapsed).html('');
     const head = box.append('div').attr('class', 'lr-head').attr('title', 'クリックで開く・閉じる')
-        .on('click', () => { rankingCollapsed = !rankingCollapsed; renderLandmarkRanking(); });
+        .on('click', () => { rankingCollapsed = !rankingCollapsed; renderLandmarkRanking(); writeShareState(); });
     head.append('strong').text('近いランドマーク');
     head.append('span').attr('class', 'lr-basis').text(`${center.name}から・${basis}順（${rows.length}件）`);
     head.append('span').attr('class', 'lr-toggle').text(rankingCollapsed ? '▼' : '▲');
@@ -1060,6 +1060,7 @@ function setupControls() {
 // --- 10. 共有 URL（表示の状態を URL の # 以降に入れる） ----------------------
 //   m=モード  s=歪み(%)  c=中心駅  v=2d|3d  bg=背景地図の濃さ(%)  hide=隠した路線（,区切り）
 //   lm=表示中のマイマップの mid（,区切り）  z=拡大率,横,縦（2D の拡大・移動）
+//   lr=open|closed（近いランドマークの表の開閉。無ければパソコンは開く・スマホは閉じる）  lp=1（ランドマークの設定パネルを開く）
 function readShareState() {
     const p = new URLSearchParams(location.hash.slice(1));
     const num = (k, lo, hi) => (p.has(k) && isFinite(+p.get(k)) ? Math.min(hi, Math.max(lo, +p.get(k))) : null);
@@ -1074,6 +1075,8 @@ function readShareState() {
         hide: list('hide'),
         landmarks: list('lm'),
         zoom: z.length === 3 && z.every(isFinite) && z[0] > 0 ? z : null,
+        ranking: ['open', 'closed'].includes(p.get('lr')) ? p.get('lr') : null,
+        landmarkPanel: p.get('lp') === '1',
     };
 }
 
@@ -1088,6 +1091,8 @@ function writeShareState() {
     if (hiddenLines.size) p.set('hide', [...hiddenLines].join(','));
     const mids = typeof LandmarkStore !== 'undefined' ? LandmarkStore.activeMids() : [];
     if (mids.length) p.set('lm', mids.join(','));
+    if (landmarks.length) p.set('lr', rankingCollapsed ? 'closed' : 'open');   // 表はランドマークを出しているときだけある
+    if (!document.getElementById('landmarkPanel').hidden) p.set('lp', '1');
     const t = d3.zoomTransform(svg.node());
     if (t.k !== 1 || t.x || t.y) p.set('z', [+t.k.toFixed(3), Math.round(t.x), Math.round(t.y)].join(','));
     history.replaceState(null, '', '#' + p.toString());
@@ -1113,6 +1118,7 @@ function init() {
     if (share.view) document.querySelector(`input[name="view"][value="${share.view}"]`).checked = true;
     if (share.basemap != null) document.getElementById('basemapOpacity').value = share.basemap;
     share.hide.forEach(name => hiddenLines.add(name));
+    if (share.ranking) rankingCollapsed = share.ranking === 'closed';
     const slider = document.getElementById('distortion');
     distortionStrength = slider.value / 100;
     document.getElementById('distortionValue').textContent = slider.value + '%';
@@ -1156,6 +1162,10 @@ function init() {
             active: share.landmarks,
             onChange: () => { renderLandmarks(); updateLayout(false); },
         });
+        // 設定パネルの開閉も URL に入れる（開閉は landmarks.js がボタンのクリックで行う）
+        const landmarkBtn = document.getElementById('landmarkBtn');
+        landmarkBtn.addEventListener('click', () => writeShareState());
+        if (share.landmarkPanel) landmarkBtn.click();
     }
     renderLandmarks();
     updateModeAvailability();
