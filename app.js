@@ -880,6 +880,18 @@ function parseClock(v) {
     const t = +m[1] * 60 + +m[2];
     return t < 4 * 60 ? t + 24 * 60 : t;
 }
+let departTimer = null;   // 出発時刻を進めている setInterval
+function setDepartPlayButton(playing) {
+    const btn = document.getElementById('departPlay');
+    btn.textContent = playing ? '⏸' : '▶';
+    btn.title = playing ? '止める' : '1 秒で 1 分ずつ出発時刻を進める';
+    btn.classList.toggle('playing', playing);
+}
+function stopDepartPlay() {
+    clearInterval(departTimer);
+    departTimer = null;
+    setDepartPlayButton(false);
+}
 function updateDepartLabel() {
     document.getElementById('departClear').hidden = departTime == null;
     document.getElementById('departHint').textContent = departTime == null ? '日中の平均' : '';
@@ -1087,9 +1099,30 @@ function setupControls() {
         recompute();
     });
     document.getElementById('departClear').addEventListener('click', () => {
+        stopDepartPlay();
         document.getElementById('departTime').value = '';
         departTime = null;
         recompute();
+    });
+    // ▶: 1 秒ごとに出発時刻を 1 分進める（空欄なら今の時刻から。27:59 の次は 4:00 に戻る）
+    document.getElementById('departPlay').addEventListener('click', () => {
+        if (departTimer) { stopDepartPlay(); return; }
+        if (departTime == null) {
+            const now = new Date();
+            departTime = parseClock(`${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`);
+            document.getElementById('departTime').value = fmtClock(departTime).padStart(5, '0');
+            recompute();
+        }
+        setDepartPlayButton(true);
+        departTimer = setInterval(() => {
+            departTime = departTime + 1 >= 28 * 60 ? 4 * 60 : departTime + 1;
+            document.getElementById('departTime').value = fmtClock(departTime).padStart(5, '0');
+            routeData = {};
+            updateDepartLabel();
+            computeRouteData(centerId);
+            describeData(centerId);
+            updateLayout(true, 500);
+        }, 1000);
     });
     document.getElementById('day').addEventListener('change', e => { dayType = e.target.value; recompute(); });
 

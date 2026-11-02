@@ -177,6 +177,8 @@ button:hover {
 .depart-hint { color: #888; font-size: 11px; }
 button.clear-btn { padding: 1px 7px; background: #868e96; }
 button.clear-btn:hover { background: #5c636a; }
+button.play-btn { padding: 1px 8px; min-width: 28px; }
+button.play-btn.playing { background: #d9480f; }
 
 /* 操作バーのボタン（ランドマーク・共有・リセット） */
 .toolbar-buttons { display: flex; gap: 6px; }
