@@ -996,6 +996,12 @@ function renderLandmarkRanking() {
     };
     const basis = { time: '所要時間', cost: '運賃', distance: '直線距離' }[currentMode];
 
+    // 作り直す前の各行の位置（順位が変わった行を、前の位置から動かして見せる）
+    const oldList = box.select('.lr-list').node();
+    const oldTop = new Map(), oldRank = new Map();
+    box.selectAll('.lr-row').each(function (r, i) { oldTop.set(r.lm.key, this.offsetTop); oldRank.set(r.lm.key, i); });
+    const scrollTop = oldList ? oldList.scrollTop : 0;
+
     box.attr('hidden', null).classed('lr-collapsed', rankingCollapsed).html('');
     const head = box.append('div').attr('class', 'lr-head').attr('title', 'クリックで開く・閉じる')
         .on('click', () => { rankingCollapsed = !rankingCollapsed; renderLandmarkRanking(); writeShareState(); });
@@ -1013,6 +1019,18 @@ function renderLandmarkRanking() {
     name.append('span').text(r => r.lm.name);
     li.append('span').attr('class', 'lr-value').text(main);
     li.append('span').attr('class', 'lr-sub').text(sub);
+
+    box.select('.lr-list').node().scrollTop = scrollTop;
+    li.each(function (r, i) {
+        const top = oldTop.get(r.lm.key);
+        if (top == null || top === this.offsetTop || !this.animate) return;
+        this.animate([{ transform: `translateY(${top - this.offsetTop}px)` }, { transform: 'none' }],
+            { duration: 500, easing: 'ease-in-out' });
+        // 上がった行は緑、下がった行は赤で少しの間色を付ける
+        const up = i < oldRank.get(r.lm.key);
+        this.animate([{ backgroundColor: up ? '#d3f9d8' : '#ffe3e3' }, { backgroundColor: 'transparent' }],
+            { duration: 1200, easing: 'ease-out' });
+    });
 }
 
 function selectLandmark(d) {
