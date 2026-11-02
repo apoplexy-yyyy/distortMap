@@ -88,6 +88,8 @@ let distortionStrength = 1;
 let centerId = null;
 let routeData = {};         // centerId -> { stationId: { time, fare, source } | null }
 const hiddenLines = new Set();   // 凡例のクリックで隠した路線（表示用の路線名。徒歩連絡は「徒歩」）
+let dayType = 'weekday';    // 'weekday'（平日ダイヤ）か 'holiday'（土休日ダイヤ）
+let departTime = null;      // 出発時刻（0 時からの分。0:00〜3:59 は 24:00〜27:59）。null は日中の平均（10〜15 時台）
 
 let svg, rootLayer, ringLayer, linkSel, nodeSel, labelSel;
 let landmarks = [];         // 表示中のランドマーク（landmarks.js の LandmarkStore.visibleItems() に位置・近い駅を足したもの）
@@ -133,7 +135,7 @@ const median = arr => {
 function lineOperators(data, key, label) {
     return Object.entries((data && data.lines) || {}).map(([line, l]) => ({
         key: key + '-' + line, label, fareGroup: key, dwell: DWELL_MIN,
-        data: { stations: l.stations, trains: l.trains, fares: data.fares, fareStations: data.stations },
+        data: { stations: l.stations, trains: l.trains, trainsHoliday: l.trainsHoliday, fares: data.fares, fareStations: data.stations },
     }));
 }
 // 事業者ごとの駅は「事業者|駅名」のノードとして扱い、同じ駅名どうしは乗換でつなぐ
@@ -154,7 +156,7 @@ const sameFare = (a, b) => (a.fareGroup || a.key) === (b.fareGroup || b.key);
 const network = (() => {
     const nodeOf = {};          // 「事業者|駅名」 -> ノード番号
     const nodes = [];           // { op, name }
-    const conns = [];
+    const conns = { weekday: [], holiday: [] };   // 平日・土休日ダイヤそれぞれの区間
     OPERATORS.forEach(op => {
         const ids = op.data.stations.map(name => {
             const key = op.key + '|' + name;
@@ -162,15 +164,19 @@ const network = (() => {
             return nodeOf[key];
         });
         op.stationSet = new Set(op.data.fareStations || op.data.stations);   // 運賃表にある駅
-        // 列車データを「駅A 発 → 駅B 着」の区間（コネクション）に分解する
-        op.data.trains.forEach(([, stops], i) => {
-            const trip = op.key + i;
-            for (let j = 0; j + 3 < stops.length; j += 2) {
-                conns.push({ from: ids[stops[j]], dep: stops[j + 1], to: ids[stops[j + 2]], arr: stops[j + 3] - op.dwell, trip });
-            }
-        });
+        // 列車データを「駅A 発 → 駅B 着」の区間（コネクション）に分解する。
+        // 土休日の列車データが無い事業者は、平日のもので代わりにする
+        op.holidayFallback = !(op.data.trainsHoliday && op.data.trainsHoliday.length) && op.data.trains.length > 0;
+        [['weekday', op.data.trains], ['holiday', op.holidayFallback ? op.data.trains : op.data.trainsHoliday || []]]
+            .forEach(([day, trains]) => trains.forEach(([, stops], i) => {
+                const trip = `${op.key}${day[0]}${i}`;
+                for (let j = 0; j + 3 < stops.length; j += 2) {
+                    conns[day].push({ from: ids[stops[j]], dep: stops[j + 1], to: ids[stops[j + 2]], arr: stops[j + 3] - op.dwell, trip });
+                }
+            }));
     });
-    conns.sort((a, b) => a.dep - b.dep);
+    conns.weekday.sort((a, b) => a.dep - b.dep);
+    conns.holiday.sort((a, b) => a.dep - b.dep);
     // 乗換: 同じ駅名のノードどうしと、徒歩連絡の駅どうし
     const transfers = nodes.map(() => []);
     const byName = {};
@@ -206,7 +212,7 @@ function earliestArrivals(srcNodes, t0) {
         });
     };
     srcNodes.forEach(n => reach(n, t0, { src: true }));   // 中心駅から徒歩連絡の駅へ歩いて乗ることもある
-    for (const c of network.conns) {
+    for (const c of network.conns[dayType]) {
         if (c.dep < t0) continue;
         const onTrip = boarded.has(c.trip);
         if (onTrip || arr[c.from] <= c.dep) {
@@ -258,12 +264,26 @@ function journeyFare(parent, target) {
 // 中心駅から各駅（駅名）への最短の所要時間（分）と、その経路の運賃
 function routesFrom(centerName) {
     const src = network.byName[centerName] || [];
+    // 出発時刻の指定があるとき: その時刻に中心駅にいて、最初の電車を待つ時間も含めた所要時間
+    if (departTime != null) {
+        const { arr, parent } = earliestArrivals(src, departTime);
+        const result = {};
+        arr.forEach((a, i) => {
+            const name = network.nodes[i].name;
+            if (!isFinite(a) || name === centerName) return;
+            const time = a - departTime, prev = result[name];
+            if (prev && prev.exact <= time) return;
+            const f = journeyFare(parent, i) || { fare: null, note: null };
+            result[name] = { exact: time, time: Math.round(time), fare: f.fare, note: f.note };
+        });
+        return result;
+    }
     // 出発時刻の候補: 中心駅の発車時刻と、乗換・徒歩連絡の先の駅の発車時刻（から歩く時間を引いたもの）
     const startAt = new Map(src.map(n => [n, 0]));
     src.forEach(n => network.transfers[n].forEach(tr => {
         if (!startAt.has(tr.to) || tr.min < startAt.get(tr.to)) startAt.set(tr.to, tr.min);
     }));
-    const starts = [...new Set(network.conns
+    const starts = [...new Set(network.conns[dayType]
         .filter(c => startAt.has(c.from) && TIME_WINDOW_HOURS.includes(Math.floor((c.dep - startAt.get(c.from)) / 60)))
         .map(c => c.dep - startAt.get(c.from)))];
     const hourlyBest = {};   // 駅名 -> { 時: { time, fare, note } }（各時台で最も速い経路。同じ速さなら安い方）
@@ -369,10 +389,22 @@ function computeRouteData(cid) {
         const f = cheap[s.name];
         const time = r ? r.time : null;
         result[s.id] = (f || time != null)
-            ? { time, fare: f ? f.fare : null, fareNote: f ? f.note + (time == null ? '・時刻表なしのため最安の運賃' : '') : null }
+            ? { time, fare: f ? f.fare : null,
+                fareNote: f ? f.note + (time != null ? '' : departTime != null ? '・この時刻からは電車で行けません（最安の運賃）' : '・時刻表なしのため最安の運賃') : null }
             : null;
     });
     return (routeData[cid] = result);
+}
+
+// 時間の基準の表示（例「 8:30 発（土休日）」。日中の平均なら土休日のときだけ「（土休日）」）
+const DAY_NAMES = { weekday: '平日', holiday: '土休日' };
+function fmtClock(min) {
+    const m = ((Math.round(min) % 1440) + 1440) % 1440;
+    return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
+}
+function timeBasis() {
+    if (departTime != null) return ` ${fmtClock(departTime)} 発（${DAY_NAMES[dayType]}）`;
+    return dayType === 'holiday' ? '（土休日）' : '';
 }
 
 function describeData(cid) {
@@ -384,8 +416,10 @@ function describeData(cid) {
     if (!OPERATORS.length) return setStatus('時刻表・運賃のデータがありません（build_keikyu.py / build_yokohama.py を実行）', 'error');
     const noTimetable = OPERATORS.filter(op => !op.data.trains.length).map(op => op.label);
     const ok = withTime === total && withFare === total;
-    setStatus(`${center.name} から: 時間 ${withTime} / ${total} 駅・運賃 ${withFare} / ${total} 駅` +
+    const fallback = dayType === 'holiday' ? OPERATORS.filter(op => op.holidayFallback).map(op => op.label) : [];
+    setStatus(`${center.name}${timeBasis()} から: 時間 ${withTime} / ${total} 駅・運賃 ${withFare} / ${total} 駅` +
         (noTimetable.length ? `（${noTimetable.join('・')}は時刻表データ未取得）` : '') +
+        (fallback.length ? `（${[...new Set(fallback)].join('・')}は土休日の時刻表が無いので平日で計算）` : '') +
         (ok ? '' : '。データなしの駅は実際の位置に灰色で表示'), ok ? 'ok' : 'warn');
 }
 
@@ -717,7 +751,7 @@ function showTooltip(event, d) {
     } else {
         info += `<div class="tooltip-info"><strong>直線距離:</strong> ${d.geo.r.toFixed(1)} km</div>`;
         if (rd) {
-            info += `<div class="tooltip-info"><strong>${center.name}から:</strong> ${rd.time != null ? rd.time + '分' : '—'} / ${rd.fare != null ? rd.fare + '円' : '—'}</div>`;
+            info += `<div class="tooltip-info"><strong>${center.name}${timeBasis()}から:</strong> ${rd.time != null ? rd.time + '分' : '—'} / ${rd.fare != null ? rd.fare + '円' : '—'}</div>`;
             if (rd.fareNote) info += `<div class="tooltip-hint">運賃（IC）: ${rd.fareNote}</div>`;
         } else {
             info += '<div class="tooltip-info">時間・運賃データなし</div>';
@@ -764,7 +798,7 @@ function showLandmarkTooltip(event, d) {
     let info = '';
     if (a) {
         const walk = `${a.station.name}${a.station.id === centerId ? '（中心駅）' : '駅'}から徒歩 約${Math.round(a.walk)}分`;
-        info = `<div class="tooltip-info"><strong>${center.name}から:</strong> ${a.time != null ? Math.round(a.time) + '分' : '—'} / ${a.fare != null ? a.fare + '円' : '—'}</div>
+        info = `<div class="tooltip-info"><strong>${center.name}${timeBasis()}から:</strong> ${a.time != null ? Math.round(a.time) + '分' : '—'} / ${a.fare != null ? a.fare + '円' : '—'}</div>
             <div class="tooltip-hint">${walk}（直線距離の1.3倍を分速80mで歩くとして計算）</div>`;
     }
     d3.select('body').append('div').attr('class', 'tooltip').html(`
@@ -837,6 +871,18 @@ function setView(view) {
     if (view3dReady) View3D.setVisible(use3d);
     hideTooltip();
     writeShareState();
+}
+
+// 時刻入力（"HH:MM"）を分に。0:00〜3:59 は深夜（前日の 24:00〜27:59）として扱う。空なら null
+function parseClock(v) {
+    const m = /^(\d{1,2}):(\d{2})/.exec(v || '');
+    if (!m) return null;
+    const t = +m[1] * 60 + +m[2];
+    return t < 4 * 60 ? t + 24 * 60 : t;
+}
+function updateDepartLabel() {
+    document.getElementById('departClear').hidden = departTime == null;
+    document.getElementById('departHint').textContent = departTime == null ? '日中の平均' : '';
 }
 
 // 地図上の駅（丸・駅名のクリック）を中心駅にする
@@ -942,7 +988,7 @@ function renderLandmarkRanking() {
     const head = box.append('div').attr('class', 'lr-head').attr('title', 'クリックで開く・閉じる')
         .on('click', () => { rankingCollapsed = !rankingCollapsed; renderLandmarkRanking(); writeShareState(); });
     head.append('strong').text('近いランドマーク');
-    head.append('span').attr('class', 'lr-basis').text(`${center.name}から・${basis}順（${rows.length}件）`);
+    head.append('span').attr('class', 'lr-basis').text(`${center.name}${timeBasis()}から・${basis}順（${rows.length}件）`);
     head.append('span').attr('class', 'lr-toggle').text(rankingCollapsed ? '▼' : '▲');
     const li = box.append('ol').attr('class', 'lr-list').selectAll('li').data(rows).join('li').attr('class', 'lr-row')
         .attr('title', r => `クリックで${r.a ? r.a.station.name : '最寄り駅'}を中心駅に設定`)
@@ -1034,6 +1080,19 @@ function setupControls() {
 
     document.getElementById('shareBtn').addEventListener('click', copyShareUrl);
 
+    // 出発時刻・平日/土休日を変えたら、時間・運賃を計算し直す
+    const recompute = () => { routeData = {}; updateDepartLabel(); changeCenter(centerId); };
+    document.getElementById('departTime').addEventListener('change', e => {
+        departTime = parseClock(e.target.value);
+        recompute();
+    });
+    document.getElementById('departClear').addEventListener('click', () => {
+        document.getElementById('departTime').value = '';
+        departTime = null;
+        recompute();
+    });
+    document.getElementById('day').addEventListener('change', e => { dayType = e.target.value; recompute(); });
+
     // スマホ: 「設定」で操作バーの残りの項目、「凡例」で凡例を開く（地図の高さが変わるので描き直す）
     const toggleOpen = (btn, el) => btn.addEventListener('click', () => {
         const open = !el.classList.contains('open');
@@ -1061,6 +1120,7 @@ function setupControls() {
 //   m=モード  s=歪み(%)  c=中心駅  v=2d|3d  bg=背景地図の濃さ(%)  hide=隠した路線（,区切り）
 //   lm=表示中のマイマップの mid（,区切り）  z=拡大率,横,縦（2D の拡大・移動）
 //   lr=open|closed（近いランドマークの表の開閉。無ければパソコンは開く・スマホは閉じる）  lp=1（ランドマークの設定パネルを開く）
+//   dt=HHMM（出発時刻。無ければ日中の平均）  day=holiday（土休日ダイヤ。無ければ平日）
 function readShareState() {
     const p = new URLSearchParams(location.hash.slice(1));
     const num = (k, lo, hi) => (p.has(k) && isFinite(+p.get(k)) ? Math.min(hi, Math.max(lo, +p.get(k))) : null);
@@ -1077,6 +1137,8 @@ function readShareState() {
         zoom: z.length === 3 && z.every(isFinite) && z[0] > 0 ? z : null,
         ranking: ['open', 'closed'].includes(p.get('lr')) ? p.get('lr') : null,
         landmarkPanel: p.get('lp') === '1',
+        departTime: /^\d{4}$/.test(p.get('dt') || '') ? parseClock(`${p.get('dt').slice(0, 2)}:${p.get('dt').slice(2)}`) : null,
+        day: p.get('day') === 'holiday' ? 'holiday' : 'weekday',
     };
 }
 
@@ -1093,6 +1155,8 @@ function writeShareState() {
     if (mids.length) p.set('lm', mids.join(','));
     if (landmarks.length) p.set('lr', rankingCollapsed ? 'closed' : 'open');   // 表はランドマークを出しているときだけある
     if (!document.getElementById('landmarkPanel').hidden) p.set('lp', '1');
+    if (departTime != null) p.set('dt', fmtClock(departTime).padStart(5, '0').replace(':', ''));
+    if (dayType === 'holiday') p.set('day', 'holiday');
     const t = d3.zoomTransform(svg.node());
     if (t.k !== 1 || t.x || t.y) p.set('z', [+t.k.toFixed(3), Math.round(t.x), Math.round(t.y)].join(','));
     history.replaceState(null, '', '#' + p.toString());
@@ -1119,6 +1183,11 @@ function init() {
     if (share.basemap != null) document.getElementById('basemapOpacity').value = share.basemap;
     share.hide.forEach(name => hiddenLines.add(name));
     if (share.ranking) rankingCollapsed = share.ranking === 'closed';
+    dayType = share.day;
+    departTime = share.departTime;
+    document.querySelector(`input[name="day"][value="${dayType}"]`).checked = true;
+    document.getElementById('departTime').value = departTime != null ? fmtClock(departTime).padStart(5, '0') : '';
+    updateDepartLabel();
     const slider = document.getElementById('distortion');
     distortionStrength = slider.value / 100;
     document.getElementById('distortionValue').textContent = slider.value + '%';

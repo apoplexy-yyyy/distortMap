@@ -5,11 +5,11 @@
 #           時刻表 PDF … /station/timestable/<駅>/pdf/<駅>_timeschedule.pdf
 #           運賃       … /sp/station/<駅>/fare.html（その駅から各駅への普通旅客運賃。IC カードの欄を使う）
 #         取得したファイルは mm_pdf/・mm_html/ に保存し、次回からはそれを使う（取り直すときは消す）
-#   出力: data/minatomirai.js … window.MINATOMIRAI = { stations, fares, trains }
+#   出力: data/minatomirai.js … window.MINATOMIRAI = { stations, fares, trains, trainsHoliday }（平日・土休日）
 #
 #   時刻表 PDF の数字は文字ではなく図形なので、図形の形（パスの命令の並び）で数字を読み、
 #   色で種別を見分ける（黒: 各停、赤: 急行、橙: 特急・通勤特急・Fライナー特急、青: S-TRAIN）。
-#   1 ページに「元町・中華街方面」「横浜方面」の表が上下に並び、それぞれ左半分が平日。
+#   1 ページに「元町・中華街方面」「横浜方面」の表が上下に並び、それぞれ左半分が平日、右半分が土曜日・休日。
 #   隣の駅の発車とつないで列車にする（build_seaside.py と同じ考え方）。
 #   S-TRAIN は座席指定券が要るので使わない。
 #
@@ -84,8 +84,9 @@ def fetch(url, path):
 
 
 # --- 時刻表 PDF -----------------------------------------------------------
-def read_numbers(page):
-    """平日（左側の表）の数字を、隣り合う同じ色の数字ごとにまとめて [{x, x1, y, v, kind}] で返す"""
+def read_numbers(page, day='weekday'):
+    """平日（左側の表）または土休日（右側の表）の数字を、隣り合う同じ色の数字ごとにまとめて
+    [{x, x1, y, v, kind}] で返す"""
     W = page.rect.width
     glyphs = []
     for x in page.get_drawings():
@@ -103,7 +104,7 @@ def read_numbers(page):
     # 平日の表は中央線を少し越えることがあるので、土曜・休日の表の「時」の列の手前までを平日とする
     right_hours = [g[0].x0 for g in glyphs if g[2] == 'hour' and g[0].x0 > W * 0.4]
     split = min(right_hours) - h * 0.5 if right_hours else W / 2
-    glyphs = [g for g in glyphs if g[0].x0 < split]
+    glyphs = [g for g in glyphs if (g[0].x0 < split) == (day == 'weekday')]
     # 行ごとにまとめる（y の中心が近いものを同じ行に。丸めで分けると行の途中で切れることがある）
     glyphs.sort(key=lambda g: (g[0].y0 + g[0].y1) / 2)
     lines, top = [], None
@@ -126,9 +127,9 @@ def read_numbers(page):
     return nums, h
 
 
-def parse_pdf(path, directions):
+def parse_pdf(path, directions, day='weekday'):
     """{ 向き: [(時刻(分), 種別)] }。時の数字（白抜き）の並びで表を分ける"""
-    nums, h = read_numbers(pymupdf.open(path)[0])
+    nums, h = read_numbers(pymupdf.open(path)[0], day)
     hours = sorted((n for n in nums if n['kind'] == 'hour'), key=lambda n: n['y'])
     # 時が 4 から始まるたびに新しい表
     tables, cur = [], None
@@ -244,20 +245,23 @@ def read_fares():
 def main():
     os.makedirs(PDF_DIR, exist_ok=True)
     os.makedirs(HTML_DIR, exist_ok=True)
-    tables = {}
+    tables, tables_holiday = {}, {}
     for name, pdf, _, dirs in STATIONS:
         path = fetch(f'{SITE}/station/timestable/{pdf}/pdf/{pdf}_timeschedule.pdf', os.path.join(PDF_DIR, pdf + '.pdf'))
         tables[name] = parse_pdf(path, dirs)
+        tables_holiday[name] = parse_pdf(path, dirs, 'holiday')
     trains = [(k, s) for k, s in build_trains(tables) if k != 'strain']   # S-TRAIN は座席指定券が要る
+    holiday = [(k, s) for k, s in build_trains(tables_holiday) if k != 'strain']
     fares = read_fares()
 
     out = {
         'generatedAt': datetime.now(timezone.utc).isoformat(),
-        'source': '横浜高速鉄道 みなとみらい線 各駅の時刻表 PDF（平日）・各駅の運賃（IC カード）',
+        'source': '横浜高速鉄道 みなとみらい線 各駅の時刻表 PDF（平日・土休日）・各駅の運賃（IC カード）',
         'stations': NAMES,
         'fares': fares,
         # 列車: [種別, [駅番号, 時刻(分), 駅番号, 時刻(分), ...]]（最後の駅だけ到着時刻）
         'trains': [[kind, [v for s in stops for v in s]] for kind, stops in trains],
+        'trainsHoliday': [[kind, [v for s in stops for v in s]] for kind, stops in holiday],
     }
     body = (f'// {out["generatedAt"]} に build_minatomirai.py で生成\n'
             f'window.MINATOMIRAI = {json.dumps(out, ensure_ascii=False, separators=(",", ":"))};\n')
@@ -267,7 +271,7 @@ def main():
     kinds = {}
     for k, _ in trains:
         kinds[k] = kinds.get(k, 0) + 1
-    print(f'時刻表: 発車 {deps} 本 → 列車 {len(trains)} 本 {kinds}')
+    print(f'時刻表: 発車 {deps} 本 → 列車 {len(trains)} 本 {kinds}・土休日 {len(holiday)} 本')
     print(f'運賃: {len(fares)} 区間')
     print(f'出力: {OUT_FILE}')
 

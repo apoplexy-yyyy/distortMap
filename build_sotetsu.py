@@ -5,7 +5,7 @@
 #         相鉄「運賃表」https://www.sotetsu.co.jp/train/fare/ にある普通旅客運賃表（大人）PDF
 #         どちらもページのリンクから PDF の URL を探す（ダイヤ改正で URL が変わっても追える）
 #         取得したファイルは sotetsu_html/・sotetsu_pdf/ に保存し、次回からはそれを使う（取り直すときは消す）
-#   出力: data/sotetsu.js … window.SOTETSU = { stations, fares, trains }
+#   出力: data/sotetsu.js … window.SOTETSU = { stations, fares, trains, trainsHoliday }（平日・土休日）
 #
 #   列車時刻表 PDF は文字として読めるので、左の駅名の行と上の列車番号の列から、各時刻がどの列車の
 #   どの駅かを決める。1 列が 1 本の列車なので、列の時刻を時刻順に並べればそのまま列車になる。
@@ -32,7 +32,9 @@ HTML_DIR = os.path.join(ROOT, 'sotetsu_html')
 PDF_DIR = os.path.join(ROOT, 'sotetsu_pdf')
 OUT_FILE = os.path.join(ROOT, 'data', 'sotetsu.js')
 SITE = 'https://www.sotetsu.co.jp'
-TIMETABLE_LINKS = ['平日ダイヤ 上り', '平日ダイヤ 下り']   # 駅・時刻表ページのリンクの文字
+# 駅・時刻表ページのリンクの文字（平日・土休日の上り・下り）
+TIMETABLE_LINKS = {'weekday': ['平日ダイヤ 上り', '平日ダイヤ 下り'],
+                   'holiday': ['土休日ダイヤ（土・日・祝日） 上り', '土休日ダイヤ（土・日・祝日） 下り']}
 FARE_LINK = '普通旅客運賃表（大人）'
 
 # 運賃表の対角線の駅の並び（network.js の表記）
@@ -167,20 +169,22 @@ def parse_fares(path):
 def main():
     os.makedirs(HTML_DIR, exist_ok=True)
     os.makedirs(PDF_DIR, exist_ok=True)
-    trains = []
-    for label in TIMETABLE_LINKS:
-        got = parse_timetable(pdf_link(f'{SITE}/train/stations/', 'stations.html', label))
-        print(f'時刻表（{label}）: 列車 {len(got)} 本')
-        trains += got
+    trains = {'weekday': [], 'holiday': []}
+    for day, labels in TIMETABLE_LINKS.items():
+        for label in labels:
+            got = parse_timetable(pdf_link(f'{SITE}/train/stations/', 'stations.html', label))
+            print(f'時刻表（{label}）: 列車 {len(got)} 本')
+            trains[day] += got
     fares = parse_fares(pdf_link(f'{SITE}/train/fare/', 'fare.html', FARE_LINK))
 
     out = {
         'generatedAt': datetime.now(timezone.utc).isoformat(),
-        'source': '相鉄 列車時刻表 PDF（平日）・普通旅客運賃表（IC カード）',
+        'source': '相鉄 列車時刻表 PDF（平日・土休日）・普通旅客運賃表（IC カード）',
         'stations': STATIONS,
         'fares': fares,
         # 列車: [種別, [駅番号, 時刻(分), 駅番号, 時刻(分), ...]]（最後の駅だけ到着時刻）
-        'trains': [[kind, [v for s in stops for v in s]] for kind, stops in trains],
+        'trains': [[kind, [v for s in stops for v in s]] for kind, stops in trains['weekday']],
+        'trainsHoliday': [[kind, [v for s in stops for v in s]] for kind, stops in trains['holiday']],
     }
     body = (f'// {out["generatedAt"]} に build_sotetsu.py で生成\n'
             f'window.SOTETSU = {json.dumps(out, ensure_ascii=False, separators=(",", ":"))};\n')

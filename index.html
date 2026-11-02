@@ -12,7 +12,7 @@
         <div class="toolbar" id="toolbar">
             <header title="中心駅からの所要時間・運賃で駅の位置を歪めて表示（方角は地図と同じ）">
                 <!-- バージョン名は更新したらここを書き換える -->
-                <h1>時間地図・運賃地図<small class="app-version">v1.0.4</small></h1>
+                <h1>時間地図・運賃地図<small class="app-version">v1.0.5</small></h1>
             </header>
             <!-- スマホ（幅 640px 以下）だけ表示。押すと「設定」の項目を開く -->
             <button id="menuBtn" class="menu-btn" type="button" aria-expanded="false" aria-controls="toolbar">設定</button>
@@ -35,6 +35,18 @@
             <div class="control-group">
                 <label for="centerStation">中心駅</label>
                 <select id="centerStation"></select>
+            </div>
+
+            <!-- 出発時刻（空欄なら日中 10〜15 時台の平均）と、平日/土休日ダイヤ -->
+            <div class="control-group depart-group">
+                <label for="departTime">出発</label>
+                <input type="time" id="departTime" step="60">
+                <button type="button" id="departClear" class="clear-btn" title="出発時刻を消す（日中の平均に戻す）" aria-label="出発時刻を消す" hidden>×</button>
+                <span id="departHint" class="depart-hint">日中の平均</span>
+                <div id="day" class="segmented" role="radiogroup" aria-label="ダイヤ">
+                    <label><input type="radio" name="day" value="weekday" checked><span>平日</span></label>
+                    <label><input type="radio" name="day" value="holiday"><span>土休日</span></label>
+                </div>
             </div>
 
             <div class="control-group secondary">

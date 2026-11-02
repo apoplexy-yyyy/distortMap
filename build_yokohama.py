@@ -8,7 +8,7 @@
 #           yokohama_gtfs/ に zip が無ければ、ODPT のアクセストークン（環境変数 ODPT_TOKEN か、
 #           ファイル .odpt_token の 1 行目）を使って GTFS_DATE の版を取得して置く。
 #           トークンが無ければ手動でダウンロードして置く（どちらも無い場合は運賃だけ出力）
-#   出力: data/yokohama.js … window.YOKOHAMA = { stations, fares, trains }
+#   出力: data/yokohama.js … window.YOKOHAMA = { stations, fares, trains, trainsHoliday }（平日・土休日）
 #
 #   運賃表 PDF は画像なので、マスを切り出して数字の形をまとめ（同じ形 = 同じ数字）、
 #   目で読んだいくつかのマスを手がかりに 0〜9 を割り当てる。
@@ -199,7 +199,8 @@ def download_gtfs():
     return True
 
 
-def read_gtfs():
+def read_gtfs(day='weekday'):
+    """day: 'weekday'（月〜金が運行日のサービス）か 'holiday'（日曜が運行日のサービス。休日ダイヤ）"""
     zips = sorted(glob.glob(os.path.join(GTFS_DIR, '*.zip')))
     if not zips:
         return None
@@ -224,15 +225,19 @@ def read_gtfs():
             s = by_id[s['parent_station']]
         return s['stop_name'].strip().removesuffix('駅')
 
-    # 平日ダイヤ: 月〜金がすべて運行日のサービス
-    weekday = {c['service_id'] for c in calendar
-               if all(c.get(d) == '1' for d in ('monday', 'tuesday', 'wednesday', 'thursday', 'friday'))}
+    # 平日ダイヤ: 月〜金がすべて運行日のサービス。休日ダイヤ: 日曜が運行日のサービス
+    #（横浜市営地下鉄は土曜と休日でサービスが分かれているが、土休日として休日のものを使う）
+    days_of = ('monday', 'tuesday', 'wednesday', 'thursday', 'friday') if day == 'weekday' else ('sunday',)
+    weekday = {c['service_id'] for c in calendar if all(c.get(d) == '1' for d in days_of)}
     if not weekday and calendar_dates:
-        # calendar_dates.txt だけの場合: 運行日として載っている最初の水曜日のサービスを平日とみなす
+        # calendar_dates.txt だけの場合: 運行日として載っている最初の水曜日（休日は日曜日）のサービスを使う
+        dow = 2 if day == 'weekday' else 6
         days = sorted({c['date'] for c in calendar_dates if c.get('exception_type') == '1'
-                       and date(int(c['date'][:4]), int(c['date'][4:6]), int(c['date'][6:])).weekday() == 2})
+                       and date(int(c['date'][:4]), int(c['date'][4:6]), int(c['date'][6:])).weekday() == dow})
         if days:
             weekday = {c['service_id'] for c in calendar_dates if c['date'] == days[0] and c.get('exception_type') == '1'}
+    if not weekday and day != 'weekday':
+        return {'file': os.path.basename(path), 'trains': []}
     trip_ok = {t['trip_id']: t for t in trips if not weekday or t['service_id'] in weekday}
 
     def minutes(hms):
@@ -262,30 +267,35 @@ def main():
     fares = read_fares()
     download_gtfs()
     gtfs = read_gtfs()
+    gtfs_holiday = read_gtfs('holiday') if gtfs else None
 
     stations = sorted(set(FARE_ORDER), key=FARE_ORDER.index)
-    trains = []
-    if gtfs:
-        unknown = {n for _, seq in gtfs['trains'] for n, _ in seq if n not in stations}
+    index = {n: i for i, n in enumerate(stations)}
+
+    def to_trains(g):
+        if not g:
+            return []
+        unknown = {n for _, seq in g['trains'] for n, _ in seq if n not in stations}
         if unknown:
             raise ValueError(f'GTFS の駅名が運賃表と一致しません: {sorted(unknown)}')
-        index = {n: i for i, n in enumerate(stations)}
         # 列車: [路線ID, [駅番号, 時刻(分), 駅番号, 時刻(分), ...]]（最後の駅だけ到着時刻）
-        trains = [[route, [v for n, t in seq for v in (index[n], t)]] for route, seq in gtfs['trains']]
+        return [[route, [v for n, t in seq for v in (index[n], t)]] for route, seq in g['trains']]
+    trains, holiday = to_trains(gtfs), to_trains(gtfs_holiday)
 
     out = {
         'generatedAt': datetime.now(timezone.utc).isoformat(),
-        'source': '横浜市交通局 普通旅客運賃表（IC運賃）' + (f'・横浜市営地下鉄 GTFS {gtfs["file"]}（平日）' if gtfs else ''),
+        'source': '横浜市交通局 普通旅客運賃表（IC運賃）' + (f'・横浜市営地下鉄 GTFS {gtfs["file"]}（平日・土休日）' if gtfs else ''),
         'stations': stations,
         'fares': fares,
         'trains': trains,
+        'trainsHoliday': holiday,
     }
     body = (f'// {out["generatedAt"]} に build_yokohama.py で生成\n'
             f'window.YOKOHAMA = {json.dumps(out, ensure_ascii=False, separators=(",", ":"))};\n')
     with open(OUT_FILE, 'w', encoding='utf-8') as fp:
         fp.write(body)
     print(f'運賃: {len(fares)} 区間')
-    print(f'時刻表: ' + (f'{gtfs["file"]} から列車 {len(trains)} 本' if gtfs
+    print(f'時刻表: ' + (f'{gtfs["file"]} から列車 {len(trains)} 本・土休日 {len(holiday)} 本' if gtfs
                        else f'GTFS がありません（{GTFS_DIR} に zip を置いてください）'))
     print(f'出力: {OUT_FILE}')
 

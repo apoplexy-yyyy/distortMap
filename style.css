@@ -172,6 +172,12 @@ button:hover {
 }
 
 /* 狭い画面: 凡例は地図の幅いっぱいにして、出典表示の上に置く */
+/* 出発時刻・平日/土休日 */
+.depart-group input[type="time"] { padding: 2px 4px; font-size: 13px; }
+.depart-hint { color: #888; font-size: 11px; }
+button.clear-btn { padding: 1px 7px; background: #868e96; }
+button.clear-btn:hover { background: #5c636a; }
+
 /* 操作バーのボタン（ランドマーク・共有・リセット） */
 .toolbar-buttons { display: flex; gap: 6px; }
 /* スマホ用のボタン（幅 640px より広いときは出さない） */
@@ -196,6 +202,10 @@ button:hover {
     .segmented span { padding: 5px 6px; }
     .control-group select { max-width: none; flex: 1; font-size: 14px; padding: 4px 6px; }
     .toolbar .control-group:has(#centerStation) { flex: 1 1 100%; }
+    .toolbar .depart-group { flex: 1 1 100%; }
+    .toolbar .depart-group > label:first-child { display: inline; }
+    .depart-group #day { margin-left: auto; }
+    .depart-group input[type="time"] { font-size: 14px; }
     .toolbar.open .secondary { flex: 1 1 100%; }
     .toolbar-buttons button { flex: 1; padding: 6px 8px; }
     .control-group input[type="range"], #basemapOpacity { flex: 1; width: auto; }

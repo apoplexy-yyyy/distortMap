@@ -9,7 +9,8 @@
 #         東急電鉄「運賃」https://www.tokyu.co.jp/railway/ticket/fares/ （営業キロ帯ごとの IC 運賃・加算運賃）
 #         Wikipedia「東急東横線」「東急新横浜線」の駅一覧（営業キロ）
 #         取得したファイルは tokyu_pdf/・tokyu_html/・jr_wiki/ に保存し、次回からはそれを使う（取り直すときは消す）
-#   出力: data/tokyu.js … window.TOKYU = { stations, fares, lines: { 路線名: { stations, trains } } }
+#   出力: data/tokyu.js … window.TOKYU = { stations, fares, lines: { 路線名: { stations, trains, trainsHoliday } } }
+#         各 PDF の左の表が平日、右の表が土曜日・休日
 #         運賃は東急の全駅どうし（路線をまたいでも 1 回の乗車）、列車は路線ごと
 #
 #   時刻表 PDF の数字は図形なので、図形の形で数字を読む。1 つの時刻は表の 1 マスに入っていて、
@@ -80,8 +81,8 @@ def digit_of(sig, rect):
 
 
 # --- 時刻表 PDF -----------------------------------------------------------
-def parse_pdf(path):
-    """平日（左の表）の [(時刻(分), 種別)] を返す"""
+def parse_pdf(path, day='weekday'):
+    """平日（左の表）または土休日（右の表）の [(時刻(分), 種別)] を返す"""
     page = pymupdf.open(path)[0]
     W = page.rect.width
     digits, hours, seps, marks = [], [], [], []
@@ -102,23 +103,42 @@ def parse_pdf(path):
             d = digit_of(sig, r)
             if d is not None:
                 hours.append((r, d))                          # 時（濃い地に白抜き）
-    # 平日の表は左側。土曜・休日の表の「時」の列より左だけを使う
+    # 平日の表は左側（土曜・休日の表の「時」の列より左）。土休日の表は右側で、幅は平日の表と同じ
+    #（その右にある「時刻表の見方」の見本の数字は使わない）
     split = min((r.x0 for r, _ in hours if r.x0 > W * 0.4), default=W / 2) - 5
-    digits = [g for g in digits if g[0].x0 < split]
-    hours = sorted((g for g in hours if g[0].x0 < split), key=lambda g: (round(g[0].y0), g[0].x0))
-    # 時の数字を行ごとにまとめる（10 時以降は 2 桁）
-    rows = []
-    for r, d in hours:
-        if rows and abs(rows[-1]['y'] - (r.y0 + r.y1) / 2) < 5:
-            rows[-1]['h'] = rows[-1]['h'] * 10 + d
-            rows[-1]['x1'] = r.x1
+    if day == 'weekday':
+        lo, hi = -1, split
+    else:
+        lo = split
+        hi = split + (split - min((r.x0 for r, _ in hours if r.x0 < W * 0.4), default=0))
+    inside = lambda r: lo <= r.x0 < hi
+    digits = [g for g in digits if inside(g[0])]
+    hours = [g for g in hours if inside(g[0])]
+    # 時は表の左端の列だけ（0 時台の行の右端にある白抜きの「1」などの印は時ではない）
+    col_x = min((g[0].x0 for g in hours), default=0)
+    hours = sorted((g for g in hours if g[0].x0 < col_x + 60), key=lambda g: (g[0].y0 + g[0].y1) / 2)
+    marks = [m for m in marks if inside(m[0])]
+    # 時の数字を行ごとにまとめる（10 時以降は 2 桁）。数字ごとに上端が少しずれるので、y の近いものを
+    # 1 行にまとめてから左から順に読む（y で先に並べると「13」が「31」になることがある）
+    groups = []
+    for g in hours:
+        yc = (g[0].y0 + g[0].y1) / 2
+        if groups and abs(groups[-1][0] - yc) < 5:
+            groups[-1][1].append(g)
         else:
-            rows.append({'y': (r.y0 + r.y1) / 2, 'h': d, 'x1': r.x1})
+            groups.append((yc, [g]))
+    rows = []
+    for yc, gs in groups:
+        gs.sort(key=lambda g: g[0].x0)
+        h = 0
+        for _, d in gs:
+            h = h * 10 + d
+        rows.append({'y': yc, 'h': h, 'x1': gs[-1][0].x1})
     deps = []
     for row in rows:
         hour = row['h'] if row['h'] >= 4 else row['h'] + 24   # 0 時台は 24 時台
         in_row = lambda r: abs((r.y0 + r.y1) / 2 - row['y']) < 14
-        cut = sorted(r.x0 for r in seps if in_row(r) and r.x0 < split)
+        cut = sorted(r.x0 for r in seps if in_row(r) and inside(r))
         cells = {}
         for r, d, kind in sorted((g for g in digits if in_row(g[0]) and g[0].x0 > row['x1']), key=lambda g: g[0].x0):
             i = sum(1 for c in cut if c <= r.x0)                # 左にある区切りの数 = マスの番号
@@ -130,9 +150,9 @@ def parse_pdf(path):
                 raise ValueError(f'{path}: {hour}時台に 59 を超える分: {cell["m"]}')
             kind = cell['kind']
             if not kind:
-                lo = cut[i - 1] if i > 0 else row['x1']
-                hi = cut[i] if i < len(cut) else split
-                m = [k for r, k in marks if in_row(r) and lo - 2 <= r.x0 <= hi]
+                right = cut[i] if i < len(cut) else hi
+                left = cut[i - 1] if i > 0 else row['x1']
+                m = [k for r, k in marks if in_row(r) and left - 2 <= r.x0 <= right]
                 kind = m[0] if m else 'local'
             deps.append((hour * 60 + cell['m'], kind))
     return sorted(deps)
@@ -260,31 +280,35 @@ def main():
     os.makedirs(HTML_DIR, exist_ok=True)
     lines, deps = {}, 0
     for line, conf in LINES.items():
-        tables = {}
+        tables = {'weekday': {}, 'holiday': {}}
         for i, (name, slug, no) in enumerate(conf['stations']):
-            tables[i] = {}
+            for day in tables:
+                tables[day][i] = {}
             for d, suffix in (('up', 1), ('down', 2)):
                 if (name, d) in conf['skip']:
                     continue
                 file = f'{EDITION}_{conf["code"]}{no:02d}_{slug}_{suffix}.pdf'
                 path = fetch(f'{SITE}/railway/timetable/pdf/{file}', os.path.join(PDF_DIR, file))
-                tables[i][d] = parse_pdf(path)
-                deps += len(tables[i][d])
-        trains = build_trains(tables, len(conf['stations']))
+                for day in tables:
+                    tables[day][i][d] = parse_pdf(path, day)
+                    deps += len(tables[day][i][d])
+        trains = {day: build_trains(t, len(conf['stations'])) for day, t in tables.items()}
         kinds = {}
-        for k, _ in trains:
+        for k, _ in trains['weekday']:
             kinds[k] = kinds.get(k, 0) + 1
-        print(f'時刻表（{line}）: 列車 {len(trains)} 本 {kinds}')
+        print(f'時刻表（{line}）: 列車 {len(trains["weekday"])} 本 {kinds}・土休日 {len(trains["holiday"])} 本')
+        pack = lambda ts: [[kind, [v for s in stops for v in s]] for kind, stops in ts]
         lines[line] = {
             'stations': [s[0] for s in conf['stations']],
             # 列車: [種別, [駅番号, 時刻(分), 駅番号, 時刻(分), ...]]（最後の駅だけ到着時刻）
-            'trains': [[kind, [v for s in stops for v in s]] for kind, stops in trains],
+            'trains': pack(trains['weekday']),
+            'trainsHoliday': pack(trains['holiday']),
         }
     fares = build_fares()
 
     out = {
         'generatedAt': datetime.now(timezone.utc).isoformat(),
-        'source': '東急電鉄 各駅時刻表 PDF（平日）・運賃表（IC）・加算運賃・Wikipedia の営業キロ',
+        'source': '東急電鉄 各駅時刻表 PDF（平日・土休日）・運賃表（IC）・加算運賃・Wikipedia の営業キロ',
         'stations': STATIONS,
         'fares': fares,
         'lines': lines,

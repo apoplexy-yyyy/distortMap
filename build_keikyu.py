@@ -2,8 +2,8 @@
 # 京急の運賃表・駅時刻表（PDF）から、駅間の運賃と所要時間のデータを作る
 #
 #   入力: keikyu_pdf/fare.pdf          … 普通旅客運賃表【IC運賃】（download_keikyu.js で取得）
-#         keikyu_pdf/KK01.pdf … KK72.pdf … 各駅の標準時刻表（平日ダイヤを使用）
-#   出力: data/keikyu.js  … window.KEIKYU = { stations, fares, trains, segments }
+#         keikyu_pdf/KK01.pdf … KK72.pdf … 各駅の標準時刻表（左が平日、右が土休日）
+#   出力: data/keikyu.js  … window.KEIKYU = { stations, fares, trains, trainsHoliday, segments }
 #
 #   時刻表 PDF は文字がアウトライン化されているので、数字の図形（パスの命令列）で
 #   0〜9 を判別し、数字の色で種別（快特・特急・急行・普通）を判別する。
@@ -104,13 +104,14 @@ def color_type(fill):
     return best if bd < 0.02 else None
 
 
-def parse_page(page):
-    """平日（左側）の表から [(時刻（0時起点の分）, 種別)] を返す"""
+def parse_page(page, day='weekday'):
+    """平日（左側）または土休日（右側）の表から [(時刻（0時起点の分）, 種別)] を返す"""
     W, H = page.rect.width, page.rect.height
     drawings = page.get_drawings()
     rects = sorted((x['rect'] for x in drawings
                     if len(x['items']) == 1 and x['items'][0][0] == 're' and x['rect'].width > W * 0.25
-                    and 40 < x['rect'].height < 60 and x['rect'].x0 < W / 2), key=lambda r: r.y0)
+                    and 40 < x['rect'].height < 60 and (x['rect'].x0 < W / 2) == (day == 'weekday')),
+                   key=lambda r: r.y0)
     rows = []
     for r in rects:
         if not rows or abs(r.y0 - rows[-1].y0) > 5:
@@ -148,7 +149,7 @@ def parse_page(page):
     return sorted(deps)
 
 
-def load_timetables():
+def load_timetables(day='weekday'):
     pages = []   # { station, heading:[...], deps:[(t, kind)] }
     for f in sorted(glob.glob(os.path.join(PDF_DIR, 'KK*.pdf'))):
         n = int(os.path.basename(f)[2:4])
@@ -157,7 +158,7 @@ def load_timetables():
             heading = PAGE_HEADING.get((n, pi))
             if heading is None:
                 heading = [UP[n]] if pi == 0 else DOWN.get(n, [])
-            deps = parse_page(page)
+            deps = parse_page(page, day)
             pages.append({'station': n, 'heading': heading, 'arrival': heading == [], 'deps': deps,
                           'name': f'KK{n:02d}-{pi}'})
     return pages
@@ -320,13 +321,17 @@ def main():
     pages = load_timetables()
     trains = build_trains(pages, coords)
     seg = fill_terminal_arrivals(trains, coords)
+    pages_holiday = load_timetables('holiday')
+    holiday = build_trains(pages_holiday, coords)
+    fill_terminal_arrivals(holiday, coords)
 
     # 泉岳寺（都営の駅）には時刻表がないので、品川始発の下り列車は泉岳寺から来るものとして補う
-    sg = [tr['stops'][-1][1] - tr['stops'][-2][1] for tr in trains if tr['stops'][-1][0] == SENGAKUJI]
-    dt = round(statistics.median(sg)) if sg else 2
-    for tr in trains:
-        if tr['stops'][0][0] == 1 and tr['stops'][1][0] != SENGAKUJI:
-            tr['stops'].insert(0, [SENGAKUJI, tr['stops'][0][1] - dt])
+    for ts in (trains, holiday):
+        sg = [tr['stops'][-1][1] - tr['stops'][-2][1] for tr in ts if tr['stops'][-1][0] == SENGAKUJI]
+        dt = round(statistics.median(sg)) if sg else 2
+        for tr in ts:
+            if tr['stops'][0][0] == 1 and tr['stops'][1][0] != SENGAKUJI:
+                tr['stops'].insert(0, [SENGAKUJI, tr['stops'][0][1] - dt])
 
     # 隣り合う停車駅間の所要時間（種別ごとの中央値）… 確認用
     segments = {}
@@ -335,11 +340,12 @@ def main():
 
     out = {
         'generatedAt': datetime.now(timezone.utc).isoformat(),
-        'source': '京急電鉄 普通旅客運賃表【IC運賃】おとな・各駅標準時刻表（平日）',
+        'source': '京急電鉄 普通旅客運賃表【IC運賃】おとな・各駅標準時刻表（平日・土休日）',
         'stations': [KK[n] for n in sorted(KK)],
         'fares': fares,
         # 列車: [種別, [駅番号, 時刻(分), 駅番号, 時刻(分), ...]]（駅番号は stations の添字）
         'trains': [[tr['kind'], [v for s in tr['stops'] for v in s[:2]]] for tr in trains],
+        'trainsHoliday': [[tr['kind'], [v for s in tr['stops'] for v in s[:2]]] for tr in holiday],
         'segments': segments,
     }
     body = (f'// {out["generatedAt"]} に build_keikyu.py で生成\n'
@@ -349,7 +355,8 @@ def main():
 
     total = sum(len(p['deps']) for p in pages)
     print(f'運賃: {len(fares)} 区間')
-    print(f'時刻表: {len(pages)} ページ / 発車 {total} 本 → 列車 {len(trains)} 本')
+    print(f'時刻表: {len(pages)} ページ / 発車 {total} 本 → 列車 {len(trains)} 本・土休日 {len(holiday)} 本'
+          f'（発車 {sum(len(p["deps"]) for p in pages_holiday)} 本）')
     print(f'出力: {OUT_FILE} ({len(body) // 1024} KB)')
 
 

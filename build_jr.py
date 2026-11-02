@@ -10,7 +10,8 @@
 #           <版>（例: 2611）は毎月変わるので、取り直すときは TIMETABLE_EDITION を最新に直す
 #         Wikipedia の営業キロ（横須賀線・品鶴線・根岸線・横浜線・東海道線 (JR東日本)・横須賀・総武快速線・京浜東北線 の駅一覧）
 #         取得したページは jr_html/・jr_wiki/ に保存し、次回からはそれを使う（取り直すときは消す）
-#   出力: data/jr.js … window.JR = { stations, km, fares, lines: { 路線名: { stations, trains } } }
+#   出力: data/jr.js … window.JR = { stations, km, fares, lines: { 路線名: { stations, trains, trainsHoliday } } }
+#         土休日の時刻表は各ページ名の末尾を 2 にしたもの（例: 222d1 → 222d2）
 #         運賃は JR の全駅どうし（路線をまたいでも 1 枚のきっぷ）、列車は路線ごと
 #
 #   運賃は営業キロから計算する（2026 年 3 月 14 日改定後の JR東日本 幹線 IC 運賃）。
@@ -222,8 +223,18 @@ def parse_table(page):
     return rows
 
 
-def parse_trains(page, stations):
-    """平日に走る普通・快速の列車を [(種別, [(駅番号, 時刻(分)), ...])] で返す（stations の停車駅だけ。駅番号は stations での位置）"""
+def runs_on(day_text, day):
+    """運転日の欄から、その日の種類（weekday / holiday）のふだんの列車か"""
+    if day_text.startswith(('平日', '全日') if day == 'weekday' else ('土休日', '全日')):
+        return True
+    # 「◆ 11月7日は運休」のように、特定の日だけ走らない列車はふだんの列車として使う
+    # （「◆ 11月7日運転」のような特定の日だけの列車や、「時変」の列は使わない）
+    return day_text.startswith('◆') and 'は運休' in day_text
+
+
+def parse_trains(page, stations, day='weekday'):
+    """day（weekday / holiday）に走る普通・快速の列車を [(種別, [(駅番号, 時刻(分)), ...])] で返す
+    （stations の停車駅だけ。駅番号は stations での位置）"""
     rows = parse_table(page)
     head = {r[0]: r[2:] for r in rows if len(r) > 2 and r[1] == ''}
     names, days = head['列車名'], head['運転日']
@@ -233,7 +244,7 @@ def parse_trains(page, stations):
     for col in range(len(names)):
         # 特急（料金が要る）・特定日だけの列車・日付限定の時刻変更（「時変」の列）は使わない。
         # 「快速 ラビット」「特別快速」など、料金の要らない快速は使う
-        if not names[col].startswith(('普通', '快速', '特別快速')) or not days[col].startswith(('平日', '全日')):
+        if not names[col].startswith(('普通', '快速', '特別快速')) or not runs_on(days[col], day):
             continue
         stops, last = [], None
         for st, kind, cells in stops_rows:
@@ -260,22 +271,25 @@ def main():
     os.makedirs(WIKI_DIR, exist_ok=True)
     lines = {}
     for line, conf in LINES.items():
-        trains = []
+        trains = {'weekday': [], 'holiday': []}
         for name in conf['pages']:
-            page = fetch(TIMETABLE_URL.format(TIMETABLE_EDITION, name), os.path.join(HTML_DIR, name + '.html'))
-            trains += parse_trains(page, conf['stations'])
-        print(f'時刻表（{line}）: 列車 {len(trains)} 本')
+            for day, page_name in (('weekday', name), ('holiday', name[:-1] + '2')):
+                page = fetch(TIMETABLE_URL.format(TIMETABLE_EDITION, page_name), os.path.join(HTML_DIR, page_name + '.html'))
+                trains[day] += parse_trains(page, conf['stations'], day)
+        print(f'時刻表（{line}）: 列車 {len(trains["weekday"])} 本・土休日 {len(trains["holiday"])} 本')
+        pack = lambda ts: [[kind, [v for s in stops for v in s]] for kind, stops in ts]
         lines[line] = {
             'stations': conf['stations'],
             # 列車: [種別, [駅番号, 時刻(分), 駅番号, 時刻(分), ...]]（最後の駅だけ到着時刻）
-            'trains': [[kind, [v for s in stops for v in s]] for kind, stops in trains],
+            'trains': pack(trains['weekday']),
+            'trainsHoliday': pack(trains['holiday']),
         }
     dist = build_distances()
     fares = build_fares(dist)
 
     out = {
         'generatedAt': datetime.now(timezone.utc).isoformat(),
-        'source': 'JR東日本 列車時刻表（総武線快速・横須賀線／京浜東北線・根岸線／横浜線／東海道線、平日）・Wikipedia の営業キロ・2026年3月改定後の幹線IC運賃',
+        'source': 'JR東日本 列車時刻表（総武線快速・横須賀線／京浜東北線・根岸線／横浜線／東海道線、平日・土休日）・Wikipedia の営業キロ・2026年3月改定後の幹線IC運賃',
         'stations': STATIONS,
         'km': {'|'.join(sorted([a, b])): dist[a][b] for i, a in enumerate(STATIONS) for b in STATIONS[i + 1:]},
         'fares': fares,

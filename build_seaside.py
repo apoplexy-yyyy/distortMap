@@ -6,7 +6,7 @@
 #         各駅の時刻表ページ（平日）
 #           https://www.seasideline.co.jp/station_guide/time_table/<駅>.html
 #           取得したページは seaside_html/ に保存し、次回からはそれを使う（取り直すときは消す）
-#   出力: data/seaside.js … window.SEASIDE = { stations, fares, trains }
+#   出力: data/seaside.js … window.SEASIDE = { stations, fares, trains, trainsHoliday }（平日・土休日）
 #
 #   シーサイドラインは全列車が各駅に停まり、追い越しもないので、
 #   ある駅の発車を「隣の駅で、駅間の運転時分（目安）だけ後の発車」とつないで列車を作る。
@@ -63,11 +63,12 @@ def fetch_pages():
     return pages
 
 
-def parse_weekday(html):
-    """平日の表から { 'up': [(分, 並木中央止まり?)], 'down': [...] } を返す（上り = 新杉田方面）"""
-    m = re.search(r'<table id="weekday">(.*?)</table>', html, re.S)
+def parse_weekday(html, table_id='weekday'):
+    """平日（table_id='weekday'）・土休日（'holiday'）の表から { 'up': [(分, 並木中央止まり?)], 'down': [...] } を返す
+    （上り = 新杉田方面）"""
+    m = re.search(rf'<table id="{table_id}">(.*?)</table>', html, re.S)
     if not m:
-        raise ValueError('平日の時刻表が見つかりません')
+        raise ValueError(f'時刻表（{table_id}）が見つかりません')
     result = {'up': [], 'down': []}
     for row in re.findall(r'<tr>(.*?)</tr>', m.group(1), re.S):
         cells = re.findall(r'<td class="([^"]*)">(.*?)</td>', row, re.S)
@@ -152,18 +153,20 @@ def read_fares():
 
 def main():
     pages = fetch_pages()
-    tables = {name: parse_weekday(pages[name]) for name in NAMES}
     run = parse_run_times(pages[NAMES[0]])
+    tables = {name: parse_weekday(pages[name]) for name in NAMES}
     trains = build_trains(tables, run)
+    holiday = build_trains({name: parse_weekday(pages[name], 'holiday') for name in NAMES}, run)
     fares = read_fares()
 
     out = {
         'generatedAt': datetime.now(timezone.utc).isoformat(),
-        'source': '横浜シーサイドライン 普通旅客運賃表（大人・IC運賃）・各駅時刻表（平日）',
+        'source': '横浜シーサイドライン 普通旅客運賃表（大人・IC運賃）・各駅時刻表（平日・土休日）',
         'stations': NAMES,
         'fares': fares,
         # 列車: [種別, [駅番号, 時刻(分), 駅番号, 時刻(分), ...]]（最後の駅だけ到着時刻）
         'trains': [['local', [v for s in stops for v in s]] for stops in trains],
+        'trainsHoliday': [['local', [v for s in stops for v in s]] for stops in holiday],
     }
     body = (f'// {out["generatedAt"]} に build_seaside.py で生成\n'
             f'window.SEASIDE = {json.dumps(out, ensure_ascii=False, separators=(",", ":"))};\n')
@@ -171,7 +174,7 @@ def main():
         fp.write(body)
     deps = sum(len(t[d]) for t in tables.values() for d in ('up', 'down'))
     print(f'運賃: {len(fares)} 区間')
-    print(f'時刻表: 発車 {deps} 本 → 列車 {len(trains)} 本（駅間の運転時分: {run}）')
+    print(f'時刻表: 発車 {deps} 本 → 列車 {len(trains)} 本（駅間の運転時分: {run}）・土休日 {len(holiday)} 本')
     print(f'出力: {OUT_FILE}')
 
 
