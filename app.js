@@ -499,7 +499,8 @@ function initSvg() {
         view3dReady = true;
     }
     d3.select(mapEl).append('div').attr('class', 'attribution')
-        .html('地図: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院（淡色地図）</a>');
+        .html('地図: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院（淡色地図）</a>'
+            + ' / ランドマークの一部: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>');
     zoomBehavior = d3.zoom().scaleExtent([0.3, 64]).on('end', writeShareState).on('zoom', e => {
         rootLayer.attr('transform', e.transform);
         BaseMap.setTransform(e.transform);

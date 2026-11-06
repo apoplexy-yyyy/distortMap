@@ -3,4 +3,6 @@
 //   例: { title: 'ボルダリングジム', url: 'https://www.google.com/maps/d/edit?mid=XXXXXXXXXXXXXXXX' },
 window.LANDMARK_PRESETS = [
     { title: '横浜周辺ボルダリングジム', url: 'https://www.google.com/maps/d/u/2/edit?mid=1Ay3CgfsoVSkclKnFZAoawqaFwmhDeRQ&usp=sharing' },
+    { title: '横浜横須賀カラオケ', url: 'https://www.google.com/maps/d/edit?mid=1IxEFe_7jl-DxeURnP9LyycwrhVFrvfk' },
+    { title: '横浜横須賀_漫喫ネカフェ', url: 'https://www.google.com/maps/d/edit?mid=10tzw2kPDdZoRODPMKWTYZd__HjOpQmI' },
 ];
