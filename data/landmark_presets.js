@@ -6,4 +6,5 @@ window.LANDMARK_PRESETS = [
     { title: '横浜横須賀カラオケ', url: 'https://www.google.com/maps/d/edit?mid=1IxEFe_7jl-DxeURnP9LyycwrhVFrvfk' },
     { title: '横浜横須賀_漫喫ネカフェ', url: 'https://www.google.com/maps/d/edit?mid=10tzw2kPDdZoRODPMKWTYZd__HjOpQmI' },
     { title: '横浜横須賀_図書施設', url: 'https://www.google.com/maps/d/edit?mid=1t9bfVqWSZIyOR29q3bI4BZ5LmyFONJo' },
+    { title: '横浜横須賀_水泳施設', url: 'https://www.google.com/maps/d/edit?mid=19xMtT5YSQFttVPvCCwICaD7E7zOR4_M' },
 ];
