@@ -494,7 +494,7 @@ function initSvg() {
         mapEl.appendChild(el3d);
         View3D.init(el3d, {
             onHover: (e, d) => (!d ? hideTooltip() : d.isLandmark ? showLandmarkTooltip(e, d) : showTooltip(e, d)),
-            onSelect: d => (d.isLandmark ? selectLandmark(d) : selectCenter(d)),
+            onSelect: d => (d.isLandmark ? openLandmarkLink(d) : selectCenter(d)),
         });
         view3dReady = true;
     }
@@ -809,7 +809,7 @@ function showLandmarkTooltip(event, d) {
         ${d.note ? `<div class="tooltip-hint">${escapeHtml(d.note)}</div>` : ''}
         ${info}
         <div class="tooltip-hint">${IS_TOUCH ? 'もう一度タップで' : 'クリックで'}${landmarkLink(d).label}を開く</div>
-        ${a ? `<div class="tooltip-hint">「近いランドマーク」の表で行をクリックすると${a.station.name}を中心駅に設定</div>` : ''}`);
+`);
     moveTooltip(event);
 }
 
@@ -1026,10 +1026,10 @@ function renderLandmarkRanking() {
     head.append('span').attr('class', 'lr-basis').text(`${center.name}${timeBasis()}から・${basis}順（${rows.length}件）`);
     head.append('span').attr('class', 'lr-toggle').text(rankingCollapsed ? '▼' : '▲');
     const li = box.append('ol').attr('class', 'lr-list').selectAll('li').data(rows).join('li').attr('class', 'lr-row')
-        .attr('title', r => `クリックで${r.a ? r.a.station.name : '最寄り駅'}を中心駅に設定`)
+        .attr('title', r => `クリックで${landmarkLink(r.lm).label}を開く`)
         .on('mouseenter', (e, r) => landmarkSel && landmarkSel.classed('hl', d => d === r.lm))
         .on('mouseleave', () => landmarkSel && landmarkSel.classed('hl', false))
-        .on('click', (e, r) => selectLandmark(r.lm));
+        .on('click', (e, r) => openLandmarkLink(r.lm));
     li.append('span').attr('class', 'lr-rank').text((r, i) => i + 1);
     const name = li.append('span').attr('class', 'lr-name').attr('title', r => r.lm.name);
     name.append('i').style('background', r => r.lm.color);
@@ -1048,11 +1048,6 @@ function renderLandmarkRanking() {
         this.animate([{ backgroundColor: up ? '#d3f9d8' : '#ffe3e3' }, { backgroundColor: 'transparent' }],
             { duration: 1200, easing: 'ease-out' });
     });
-}
-
-function selectLandmark(d) {
-    const a = landmarkAccess(d);
-    if (a) selectCenter(a.station);
 }
 
 // 表示するランドマークを読み直して、記号と名前を作る（位置は updateLayout で決める）
