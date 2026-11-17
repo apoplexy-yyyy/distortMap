@@ -160,6 +160,16 @@ const LandmarkStore = (() => {
         changed();
     }
 
+    // マイマップをすべて読み直す（表示のオンオフはそのまま）
+    async function reloadAll() {
+        const targets = maps.filter(m => m.mid && !m.loading);
+        if (!targets.length) return;
+        await Promise.all(targets.map(m => load(m)));
+        const ng = targets.filter(m => m.error).length;
+        opts.setStatus && opts.setStatus(`ランドマーク: マイマップ ${targets.length} 件を読み直しました`
+            + (ng ? `（${ng} 件は読み込めませんでした）` : ''), ng ? 'warn' : 'ok');
+    }
+
     const count = m => (m.layers || []).reduce((n, l) => n + l.items.length, 0);
     const nextColor = () => COLORS[maps.length % COLORS.length];
 
@@ -265,7 +275,11 @@ const LandmarkStore = (() => {
         const fileInput = el('input', { type: 'file', accept: '.kml,application/vnd.google-earth.kml+xml', multiple: true, hidden: true,
             on: { change: e => { addFiles(e.target.files); e.target.value = ''; } } });
         panel.append(
-            el('div', { class: 'lm-head' }, el('strong', {}, 'ランドマーク'), el('span', { class: 'lm-hint' }, 'Google マイマップの地点を地図に重ねます')),
+            el('div', { class: 'lm-head' }, el('strong', { style: 'white-space:nowrap' }, 'ランドマーク'), el('span', { class: 'lm-hint' }, 'Google マイマップの地点を地図に重ねます'),
+                maps.some(m => m.mid) ? el('button', {
+                    type: 'button', class: 'lm-small', style: 'margin-left:auto; flex:none', title: 'マイマップをすべて読み直す（表示のオンオフは変えない）',
+                    disabled: maps.some(m => m.loading), on: { click: reloadAll },
+                }, 'すべて再読み込み') : null),
             list,
             el('div', { class: 'lm-add' }, input, addBtn),
             el('div', { class: 'lm-add' },
