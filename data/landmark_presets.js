@@ -7,4 +7,7 @@ window.LANDMARK_PRESETS = [
     { title: '横浜横須賀_漫喫ネカフェ', url: 'https://www.google.com/maps/d/edit?mid=10tzw2kPDdZoRODPMKWTYZd__HjOpQmI' },
     { title: '横浜横須賀_図書施設', url: 'https://www.google.com/maps/d/edit?mid=1t9bfVqWSZIyOR29q3bI4BZ5LmyFONJo' },
     { title: '横浜横須賀_水泳施設', url: 'https://www.google.com/maps/d/edit?mid=19xMtT5YSQFttVPvCCwICaD7E7zOR4_M' },
+    { title: '横浜横須賀_スポーツ施設', url: 'https://www.google.com/maps/d/edit?mid=1NLaOm5KcmStZa-aB09aieQxs02tt0Yc' },
+    { title: '横浜横須賀_美術館・博物館', url: 'https://www.google.com/maps/d/edit?mid=1Uoztr2N_0xbGpo3wYz8h4R-WBqSSWCE' },
+    { title: '横浜横須賀_公園・動物園・植物園', url: 'https://www.google.com/maps/d/edit?mid=1jIa9wc9UB8NwHOtkChi7dn9OxazE0os' },
 ];
