@@ -36,7 +36,9 @@ const LandmarkStore = (() => {
             if (!Array.isArray(v)) return [];
             // ホームページ（url）を取り出す前に保存した地点は、マイマップから読み直す
             const old = m => m.mid && (m.layers || []).some(l => l.items.some(it => !('url' in it)));
-            return v.map(m => ({ ...m, loading: false, loaded: m.loaded && !old(m) }));
+            // build_landmarks.py で取り込み直した（マイマップを作り直した）ときも読み直す
+            const stale = m => m.mid && bundledAt(m.mid) && m.bundledAt !== bundledAt(m.mid);
+            return v.map(m => ({ ...m, loading: false, loaded: m.loaded && !old(m) && !stale(m) }));
         } catch (e) { return []; }
     }
 
@@ -103,6 +105,7 @@ const LandmarkStore = (() => {
 
     // build_landmarks.py で取り込んでおいた KML（data/landmarks_kml.js）
     const bundled = mid => window.LANDMARK_KML && window.LANDMARK_KML[mid] && window.LANDMARK_KML[mid].kml;
+    function bundledAt(mid) { return window.LANDMARK_KML && window.LANDMARK_KML[mid] && window.LANDMARK_KML[mid].fetchedAt; }
 
     async function fetchKml(mid) {
         // index.html を直接開いているとき（file://）は Google を読めないので、取り込んでおいた KML を使う
@@ -138,6 +141,7 @@ const LandmarkStore = (() => {
         map.layers = parsed.layers.map(l => ({ ...l, on: prevOn.has(l.name) ? prevOn.get(l.name) : true }));
         map.loaded = true;
         map.error = null;
+        if (map.mid) map.bundledAt = bundledAt(map.mid);
     }
 
     async function load(map) {
