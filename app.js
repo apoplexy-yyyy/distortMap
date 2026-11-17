@@ -1300,6 +1300,15 @@ function init() {
         if (share.landmarkPanel) landmarkBtn.click();
     }
     renderLandmarks();
+    // 右上のランドマークの列（.map-side）は凡例の上で止める。凡例の高さは折り返しや開閉で変わるので測って CSS に渡す
+    const legendEl = document.getElementById('legend');
+    if (legendEl) {
+        const setLegendHeight = () => legendEl.parentElement.style.setProperty('--legend-h', `${Math.ceil(legendEl.getBoundingClientRect().height)}px`);
+        setLegendHeight();
+        window.addEventListener('resize', setLegendHeight);
+        if (window.ResizeObserver) new ResizeObserver(setLegendHeight).observe(legendEl);
+        else document.getElementById('legendBtn')?.addEventListener('click', () => setTimeout(setLegendHeight));
+    }
     updateModeAvailability();
     // 時間地図・運賃地図で開いたときは、まず実地図（歪み 0%）で描き、指定の歪みまでゆっくり歪める
     const targetDistortion = distortionStrength;

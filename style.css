@@ -221,8 +221,10 @@ button.play-btn.playing { background: #d9480f; }
     .legend:not(.open) .legend-items, .legend:not(.open) .legend-missing { display: none; }
     .legend.open { right: 6px; }
     /* ランドマークの表・設定パネルは横いっぱい */
-    .landmark-ranking { left: 6px; right: 6px; top: 6px; width: auto; max-height: 45%; }
-    .landmark-panel { left: 6px; right: 6px; top: 6px; width: auto; }
+    /* （.map-side などの基本の指定はこの後に書いてあるので、詳しく指定して上書きする） */
+    .map-wrap .map-side { left: 6px; right: 6px; top: 6px; bottom: calc(var(--legend-h, 0px) + 28px); max-width: none; align-items: stretch; gap: 6px; }
+    .map-side > .landmark-ranking { width: auto; max-height: 45%; }
+    .map-side > .landmark-panel { width: auto; }
     .tooltip { max-width: calc(100vw - 24px); }
 }
 
@@ -297,13 +299,25 @@ button.play-btn.playing { background: #d9480f; }
 .tooltip-hint { margin-top: 4px; color: #aaa; font-size: 11px; }
 
 /* --- ランドマーク（landmarks.js のパネルと、地図上のアイコン） --- */
-.landmark-panel {
+/* 地図の右上の列。設定パネル（上）と近い順の表（下）を縦に並べて、重ならないようにする */
+.map-side {
     position: absolute;
     top: 8px;
     right: 8px;
+    bottom: calc(var(--legend-h, 0px) + 16px);   /* 凡例（下端）とも重ならない。高さは app.js が測る */
     z-index: 3;
-    width: min(360px, calc(100% - 16px));
-    max-height: calc(100% - 16px);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    max-width: calc(100% - 16px);
+    pointer-events: none;   /* 列の空いたところは地図を操作できる */
+}
+.map-side > * { pointer-events: auto; }
+.landmark-panel {
+    width: min(360px, 100%);
+    flex: 0 1 auto;
+    min-height: 0;
     overflow: auto;
     box-sizing: border-box;
     background: rgba(255, 255, 255, 0.97);
@@ -346,13 +360,11 @@ button.lm-remove:hover { background: #5c636a; }
 }
 .label3d.landmark3d { font-size: 11px; font-style: italic; color: #444; }
 
-/* ランドマークの近い順の表（地図の右上。設定パネルを開くとその下に隠れる） */
+/* ランドマークの近い順の表（地図の右上。設定パネルを開くとその下に並ぶ） */
 .landmark-ranking {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    z-index: 2;
-    width: min(260px, calc(100% - 16px));
+    width: min(260px, 100%);
+    flex: 0 1 auto;
+    min-height: 90px;   /* パネルが長くても見出しと数行は見える（あふれた分は表の中でスクロール） */
     max-height: min(55%, 420px);
     display: flex;
     flex-direction: column;
