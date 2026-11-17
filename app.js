@@ -775,7 +775,8 @@ function moveTooltip(event) {
     tip.style('left', left + 'px').style('top', top + 'px');
 }
 
-// タッチ操作（マウスのない端末）では、1 回目のタップで情報を出し、同じものをもう一度タップしたら中心駅にする
+// タッチ操作（マウスのない端末）では、1 回目のタップで情報を出し、同じものをもう一度タップしたら
+// 中心駅にする（ランドマークはホームページなどを開く）
 const IS_TOUCH = window.matchMedia && window.matchMedia('(hover: none)').matches;
 let tapPreview = null;
 function tapOrSelect(event, d, show, select) {
@@ -807,8 +808,23 @@ function showLandmarkTooltip(event, d) {
         ${where ? `<div class="tooltip-info">${where}</div>` : ''}
         ${d.note ? `<div class="tooltip-hint">${escapeHtml(d.note)}</div>` : ''}
         ${info}
-        ${a ? `<div class="tooltip-hint">${IS_TOUCH ? 'もう一度タップで' : 'クリックで'}${a.station.name}を中心駅に設定</div>` : ''}`);
+        <div class="tooltip-hint">${IS_TOUCH ? 'もう一度タップで' : 'クリックで'}${landmarkLink(d).label}を開く</div>
+        ${a ? `<div class="tooltip-hint">「近いランドマーク」の表で行をクリックすると${a.station.name}を中心駅に設定</div>` : ''}`);
     moveTooltip(event);
+}
+
+// ランドマークをクリックしたときに開くページ: 説明欄のホームページ。なければ Google マップで名前を検索する
+function landmarkLink(d) {
+    if (d.url) return { href: d.url, label: 'ホームページ' };
+    const named = d.name && !/^[（(]名[前称]なし[)）]$/.test(d.name);
+    return {
+        href: named ? `https://www.google.com/maps/search/${encodeURIComponent(d.name)}/@${d.lat},${d.lng},17z`
+            : `https://www.google.com/maps?q=${d.lat},${d.lng}`,
+        label: 'Google マップ',
+    };
+}
+function openLandmarkLink(d) {
+    window.open(landmarkLink(d).href, '_blank', 'noopener');
 }
 
 // 凡例: 項目をクリックするとその路線の表示・非表示を切り替える
@@ -1047,7 +1063,7 @@ function renderLandmarks() {
         .on('mouseover', showLandmarkTooltip)
         .on('mousemove', moveTooltip)
         .on('mouseout', hideTooltip)
-        .on('click', (e, d) => tapOrSelect(e, d, showLandmarkTooltip, selectLandmark))
+        .on('click', (e, d) => tapOrSelect(e, d, showLandmarkTooltip, openLandmarkLink))
         .on('dblclick', e => e.stopPropagation());
     landmarkSel = on(rootLayer.select('.landmarks').selectAll('g.landmark').data(landmarks, d => d.key).join(enter => {
         const g = enter.append('g').attr('class', 'landmark');

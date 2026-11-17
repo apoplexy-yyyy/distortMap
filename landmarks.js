@@ -9,7 +9,7 @@
 //   地図ごとの表示は、開いたときはすべてオフ（共有 URL で指定されたものだけオン）
 //
 //   LandmarkStore.init({ button, panel, onChange, setStatus, active })   active … 表示する地図の mid の配列（共有 URL から）
-//   LandmarkStore.visibleItems() … 表示中の地点 [{ key, name, lat, lng, note, mapTitle, layerName, color }]
+//   LandmarkStore.visibleItems() … 表示中の地点 [{ key, name, lat, lng, note, url, mapTitle, layerName, color }]
 //   LandmarkStore.activeMids()   … 表示中のマイマップの mid（共有 URL 用。KML ファイルから読んだ地図は含まない）
 // =====================================================================
 
@@ -18,7 +18,8 @@ const LandmarkStore = (() => {
     const COLORS = ['#d6336c', '#0ca678', '#f08c00', '#7048e8', '#1c7ed6', '#e8590c', '#2b8a3e'];
     const NO_LAYER = '（レイヤーなし）';
 
-    // { id, title, mid?, file?, preset, on, loaded, error, color, layers: [{ name, on, items: [{ name, lat, lng, note }] }] }
+    // { id, title, mid?, file?, preset, on, loaded, error, color, layers: [{ name, on, items: [{ name, lat, lng, note, url }] }] }
+    //   url … 地点のホームページ（説明欄の URL から。なければ ''）
     let maps = [];
     let opts = {};
     let panel;
@@ -32,7 +33,10 @@ const LandmarkStore = (() => {
     function restore() {
         try {
             const v = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-            return Array.isArray(v) ? v.map(m => ({ ...m, loading: false })) : [];
+            if (!Array.isArray(v)) return [];
+            // ホームページ（url）を取り出す前に保存した地点は、マイマップから読み直す
+            const old = m => m.mid && (m.layers || []).some(l => l.items.some(it => !('url' in it)));
+            return v.map(m => ({ ...m, loading: false, loaded: m.loaded && !old(m) }));
         } catch (e) { return []; }
     }
 
@@ -54,11 +58,24 @@ const LandmarkStore = (() => {
         };
         const plain = html => {
             if (!html) return '';
-            const t = new DOMParser().parseFromString(html, 'text/html').body.textContent || '';
+            const t = new DOMParser().parseFromString(html.replace(/<br\s*\/?>/gi, ' / '), 'text/html').body.textContent || '';
             return t.replace(/\s+/g, ' ').trim().slice(0, 200);
+        };
+        // 説明欄の「ウェブサイト: URL」「情報源: URL」を取り出す（マイマップでは <br> 区切りの文字や <a> になっている）
+        const urlsOf = html => {
+            const out = {};
+            if (!html) return out;
+            const body = new DOMParser().parseFromString(html.replace(/<br\s*\/?>/gi, '\n'), 'text/html').body;
+            body.querySelectorAll('a[href]').forEach(a => { a.textContent = a.getAttribute('href'); });
+            (body.textContent || '').split('\n').forEach(line => {
+                const m = line.match(/^\s*([^:：]{1,20})[:：]\s*(https?:\/\/\S+)/);
+                if (m && !out[m[1].trim()]) out[m[1].trim()] = m[2];
+            });
+            return out;
         };
         const docEl = doc.getElementsByTagName('Document')[0];
         const layers = new Map();
+        const pending = [];   // [{ item, urls }]（情報源の URL が一覧ページかどうかは、全地点を見てから決める）
         [...doc.getElementsByTagName('Placemark')].forEach(pm => {
             const point = pm.getElementsByTagName('Point')[0];
             const coord = point && point.getElementsByTagName('coordinates')[0];
@@ -69,7 +86,16 @@ const LandmarkStore = (() => {
             const layer = nameOf(folder) || NO_LAYER;
             const desc = pm.getElementsByTagName('description')[0];
             if (!layers.has(layer)) layers.set(layer, []);
-            layers.get(layer).push({ name: nameOf(pm) || '（名前なし）', lat, lng, note: plain(desc && desc.textContent) });
+            const item = { name: nameOf(pm) || '（名前なし）', lat, lng, note: plain(desc && desc.textContent), url: '' };
+            layers.get(layer).push(item);
+            pending.push({ item, urls: urlsOf(desc && desc.textContent) });
+        });
+        // ホームページ: 「ウェブサイト」があればそれ。なければ「情報源」（3 地点以上で同じ URL なら一覧ページなので使わない）
+        const used = new Map();
+        pending.forEach(({ urls }) => urls['情報源'] && used.set(urls['情報源'], (used.get(urls['情報源']) || 0) + 1));
+        pending.forEach(({ item, urls }) => {
+            const src = urls['情報源'];
+            item.url = urls['ウェブサイト'] || (src && used.get(src) < 3 && !/openstreetmap\.org/.test(src) ? src : '');
         });
         if (!layers.size) throw new Error('地点（ピン）がありません');
         return { title: nameOf(docEl), layers: [...layers].map(([name, items]) => ({ name, items })) };
