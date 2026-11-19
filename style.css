@@ -283,6 +283,9 @@ button.play-btn.playing { background: #d9480f; }
 .legend-items { display: flex; gap: 4px 12px; flex-wrap: wrap; }
 
 .station { cursor: pointer; }
+.bus-stop { cursor: default; opacity: 0.75; }
+.bus-stop:hover { opacity: 1; }
+.legend-bus { width: 8px; height: 8px; border-radius: 50%; }
 .station.center { stroke: #222; stroke-width: calc(2.5px * var(--text-scale, 1)); }
 /* --text-scale は app.js がズーム倍率に応じて設定する */
 .station-label.transfer { font-weight: bold; font-size: calc(13px * var(--text-scale, 1)); }   /* 乗換駅 */

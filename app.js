@@ -94,6 +94,8 @@ let departTime = null;      // 出発時刻（0 時からの分。0:00〜3:59 �
 let svg, rootLayer, ringLayer, linkSel, nodeSel, labelSel;
 let landmarks = [];         // 表示中のランドマーク（landmarks.js の LandmarkStore.visibleItems() に位置・近い駅を足したもの）
 let landmarkSel, landmarkLabelSel;
+let busStops = [];          // 市営バスの停留所 { id: 'bus:名前', name, lat, lng, routes[], isBus }
+let busSel;
 let zoomBehavior = null;    // d3.zoom（共有 URL の拡大・移動を戻すときに使う）
 let shareReady = false;     // 共有 URL から表示を戻し終わるまでは URL を書き換えない
 let view3dReady = false;    // 3D 表示が使えるか
@@ -138,6 +140,20 @@ function lineOperators(data, key, label) {
         data: { stations: l.stations, trains: l.trains, trainsHoliday: l.trainsHoliday, fares: data.fares, fareStations: data.stations },
     }));
 }
+// 横浜市営バス（data/yokohama_bus.js）。停留所のノード名は「bus:停留所名」（同じ名前の駅とはまとめない）。
+// パターン（同じ停留所の並び・所要時間の便）を便ごとの列車データの形に広げる
+const BUS = window.YOKOHAMA_BUS;
+const BUS_LABEL = '市営バス';
+const BUS_COLOR = '#2b8a3e';
+const BUS_TRANSFER_KM = 0.3;   // 駅からこの距離（直線）までのバス停に歩いて乗り換えられる
+const busNodeName = name => 'bus:' + name;
+const nodeLabel = name => name.replace(/^bus:/, '');
+function busTrains(day) {
+    const trains = [];
+    BUS.patterns.forEach(p => p[day].forEach(t0 => trains.push([p.route, p.stops.flatMap((s, i) => [s, t0 + p.offsets[i]])])));
+    return trains;
+}
+
 // 事業者ごとの駅は「事業者|駅名」のノードとして扱い、同じ駅名どうしは乗換でつなぐ
 const OPERATORS = [
     { key: 'keikyu', label: '京急', data: window.KEIKYU, dwell: DWELL_MIN },
@@ -149,9 +165,12 @@ const OPERATORS = [
     // JR・東急は路線ごとに分け（同じ駅での路線間の乗換に時間がかかるように）、運賃は会社全体で 1 回の乗車として数える
     ...lineOperators(window.TOKYU, 'tokyu', '東急'),
     ...lineOperators(window.JR, 'jr', 'JR'),
-].filter(op => op.data);
-// 運賃を通しで数える事業者どうしか（JR の路線どうし、東急の路線どうし）
-const sameFare = (a, b) => (a.fareGroup || a.key) === (b.fareGroup || b.key);
+    // バスは均一運賃で、乗るたびに払う
+    BUS && { key: 'bus', label: BUS_LABEL, kind: 'bus', dwell: 0, flatFare: BUS.fare,
+        data: { stations: BUS.stops.map(s => busNodeName(s[0])), trains: busTrains('weekday'), trainsHoliday: busTrains('holiday') } },
+].filter(op => op && op.data);
+// 運賃を通しで数える事業者どうしか（JR の路線どうし、東急の路線どうし。バスは 1 回ごと）
+const sameFare = (a, b) => a.flatFare == null && (a.fareGroup || a.key) === (b.fareGroup || b.key);
 
 const network = (() => {
     const nodeOf = {};          // 「事業者|駅名」 -> ノード番号
@@ -194,6 +213,22 @@ const network = (() => {
             transfers[b].push({ to: a, min: w.min });
         }));
     });
+    // 駅と近くのバス停（直線 BUS_TRANSFER_KM 以内）を歩いてつなぐ（道なりは直線の 1.3 倍・分速 80 m、最低 2 分）
+    if (BUS && window.NETWORK) {
+        BUS.stops.forEach(([name, lat, lng]) => {
+            const b = nodeOf['bus|' + busNodeName(name)];
+            window.NETWORK.stations.forEach(s => {
+                const km = kmBetween({ lat, lng }, s);
+                if (km > BUS_TRANSFER_KM) return;
+                const min = Math.max(2, km * 1000 * 1.3 / 80);
+                (byName[s.name] || []).forEach(a => {
+                    if (nodes[a].op.kind === 'bus') return;
+                    transfers[a].push({ to: b, min });
+                    transfers[b].push({ to: a, min });
+                });
+            });
+        });
+    }
     return { nodeOf, nodes, conns, transfers, byName };
 })();
 
@@ -214,6 +249,7 @@ function earliestArrivals(srcNodes, t0) {
     srcNodes.forEach(n => reach(n, t0, { src: true }));   // 中心駅から徒歩連絡の駅へ歩いて乗ることもある
     for (const c of network.conns[dayType]) {
         if (c.dep < t0) continue;
+        if (c.dep > t0 + 240) break;   // 4 時間より先は使わない（区間は発車順）
         const onTrip = boarded.has(c.trip);
         if (onTrip || arr[c.from] <= c.dep) {
             if (!onTrip) boarded.set(c.trip, c);
@@ -232,7 +268,7 @@ function journeyFare(parent, target) {
         if (p.src) break;
         if (p.walkFrom != null) {
             const a = network.nodes[p.walkFrom].name, b = network.nodes[n].name;
-            if (a !== b) steps.unshift({ walk: `${a}〜${b} 徒歩` });
+            if (a !== b) steps.unshift({ walk: `${nodeLabel(a)}〜${nodeLabel(b)} 徒歩` });
             n = p.walkFrom;
             continue;
         }
@@ -245,7 +281,7 @@ function journeyFare(parent, target) {
         const last = rides[rides.length - 1];
         if (last && sameFare(last.op, st.op) && last.to === st.from) last.to = st.to;
         else {
-            if (last && last.to === st.from) ways.push(`${st.from}乗換`);   // 同じ駅で別の事業者に乗り換え
+            if (last && last.to === st.from) ways.push(`${nodeLabel(st.from)}乗換`);   // 同じ駅で別の事業者に乗り換え
             rides.push({ ...st });
         }
     });
@@ -258,7 +294,7 @@ function journeyFare(parent, target) {
         parts.push(`${r.op.label} ${f}円`);
     }
     const how = [...new Set(ways)].join('・');
-    return { fare, note: parts.join('＋') + (how ? `（${how}）` : '') };
+    return { fare, note: (parts.join('＋') || '徒歩のみ') + (how ? `（${how}）` : '') };
 }
 
 // 中心駅から各駅（駅名）への最短の所要時間（分）と、その経路の運賃
@@ -284,7 +320,7 @@ function routesFrom(centerName) {
         if (!startAt.has(tr.to) || tr.min < startAt.get(tr.to)) startAt.set(tr.to, tr.min);
     }));
     const starts = [...new Set(network.conns[dayType]
-        .filter(c => startAt.has(c.from) && TIME_WINDOW_HOURS.includes(Math.floor((c.dep - startAt.get(c.from)) / 60)))
+        .filter(c => startAt.has(c.from) && network.nodes[c.from].op.kind !== 'bus' && TIME_WINDOW_HOURS.includes(Math.floor((c.dep - startAt.get(c.from)) / 60)))
         .map(c => c.dep - startAt.get(c.from)))];
     const hourlyBest = {};   // 駅名 -> { 時: { time, fare, note } }（各時台で最も速い経路。同じ速さなら安い方）
     const better = (a, b) => !b || a.time < b.time || (a.time === b.time && (a.fare ?? Infinity) < (b.fare ?? Infinity));
@@ -313,6 +349,7 @@ function routesFrom(centerName) {
 
 // 事業者 op で駅 a から駅 b まで乗ったときの運賃
 function fareOf(op, a, b) {
+    if (op.flatFare != null) return a === b ? 0 : op.flatFare;
     if (!op.stationSet.has(a) || !op.stationSet.has(b)) return null;
     return a === b ? 0 : (op.data.fares[pairKey(a, b)] ?? null);
 }
@@ -393,6 +430,10 @@ function computeRouteData(cid) {
                 fareNote: f ? f.note + (time != null ? '' : departTime != null ? '・この時刻からは電車で行けません（最安の運賃）' : '・時刻表なしのため最安の運賃') : null }
             : null;
     });
+    busStops.forEach(b => {
+        const r = routes[b.id];
+        result[b.id] = r ? { time: r.time, fare: r.fare, fareNote: r.note } : null;
+    });
     return (routeData[cid] = result);
 }
 
@@ -420,6 +461,7 @@ function describeData(cid) {
     setStatus(`${center.name}${timeBasis()} から: 時間 ${withTime} / ${total} 駅・運賃 ${withFare} / ${total} 駅` +
         (noTimetable.length ? `（${noTimetable.join('・')}は時刻表データ未取得）` : '') +
         (fallback.length ? `（${[...new Set(fallback)].join('・')}は土休日の時刻表が無いので平日で計算）` : '') +
+        (busStops.length ? `・バス停 ${busStops.filter(b => routeData[cid][b.id] && routeData[cid][b.id].time != null).length} / ${busStops.length}` : '') +
         (ok ? '' : '。データなしの駅は実際の位置に灰色で表示'), ok ? 'ok' : 'warn');
 }
 
@@ -427,7 +469,7 @@ function describeData(cid) {
 // 中心駅を原点とした km 座標（x: 東, y: 南）
 function computeGeo() {
     const c = stations.find(s => s.id === centerId);
-    stations.forEach(s => {
+    [...stations, ...busStops].forEach(s => {
         const latMid = (s.lat + c.lat) / 2 * Math.PI / 180;
         const x = (s.lng - c.lng) * 111.32 * Math.cos(latMid);
         const y = -(s.lat - c.lat) * 110.57;
@@ -446,7 +488,7 @@ function valueOf(s) {
 function computePositions() {
     computeGeo();
     if (currentMode === 'distance') {
-        stations.forEach(s => { s.px = s.geo.x; s.py = s.geo.y; s.missing = false; });
+        [...stations, ...busStops].forEach(s => { s.px = s.geo.x; s.py = s.geo.y; s.missing = false; });
         return { k: null };
     }
     // 縮尺合わせ: 全駅の「実距離の合計」と「値×k の合計」が等しくなる k
@@ -467,6 +509,14 @@ function computePositions() {
         s.px = Math.cos(s.geo.angle) * r;
         s.py = Math.sin(s.geo.angle) * r;
         s.missing = false;
+    });
+    // バス停も同じ式で（縮尺 k は駅だけで決める）。値の無い停留所は実際の位置
+    busStops.forEach(b => {
+        const v = valueOf(b);
+        const r = v == null || k == null ? b.geo.r : (1 - t) * b.geo.r + t * k * v;
+        b.px = Math.cos(b.geo.angle) * r;
+        b.py = Math.sin(b.geo.angle) * r;
+        b.missing = v == null || k == null;
     });
     return { k };
 }
@@ -517,6 +567,7 @@ function initSvg() {
     svg.call(zoomBehavior);
     ringLayer = rootLayer.append('g').attr('class', 'rings');
     rootLayer.append('g').attr('class', 'links');
+    rootLayer.append('g').attr('class', 'bus-stops');   // バス停は駅の下
     rootLayer.append('g').attr('class', 'nodes');
     rootLayer.append('g').attr('class', 'landmarks');        // ランドマークは駅の上（駅の丸に隠れないように）
     rootLayer.append('g').attr('class', 'landmark-labels');
@@ -540,6 +591,13 @@ function render() {
         .on('mousemove', moveTooltip)
         .on('mouseout', hideTooltip)
         .on('click', (e, d) => tapOrSelect(e, d, showTooltip, selectCenter));
+
+    busSel = rootLayer.select('.bus-stops').selectAll('circle').data(busStops, d => d.id).join('circle')
+        .attr('class', 'bus-stop')
+        .on('mouseover', showBusTooltip)
+        .on('mousemove', moveTooltip)
+        .on('mouseout', hideTooltip)
+        .on('click', (e, d) => tapOrSelect(e, d, showBusTooltip, () => {}));
 
     labelSel = rootLayer.select('.labels').selectAll('text').data(stations, d => d.id).join('text')
         .attr('class', 'station-label')
@@ -589,6 +647,9 @@ function updateLayout(animate = true, duration = 600) {
         .classed('center', d => d.id === centerId);
     applyZoomScale();
     tr(nodeSel).attr('cx', X).attr('cy', Y);
+    busSel.style('display', hiddenLines.has(BUS_LABEL) ? 'none' : null)
+        .attr('fill', d => (d.missing ? '#bbb' : BUS_COLOR));
+    tr(busSel).attr('cx', X).attr('cy', Y);
 
     stations.forEach(s => { s.fx = X(s); s.fy = Y(s); });   // アニメーション後の位置
     const warp = buildWarp(cx, cy, scale);
@@ -653,6 +714,7 @@ function applyZoomScale() {
     if (!nodeSel) return;
     nodeSel.attr('r', d => nodeRadius(d) * zoomScale).attr('stroke-width', 1.5 * zoomScale);
     linkSel.attr('stroke-width', 3 * zoomScale);
+    if (busSel) busSel.attr('r', 2.2 * zoomScale);
     if (landmarkSel) landmarkSel.select('g.pin').attr('transform', `scale(${zoomScale})`);
 }
 
@@ -765,6 +827,22 @@ function showTooltip(event, d) {
         <div class="tooltip-hint">${IS_TOUCH ? 'もう一度タップで中心駅に設定' : '駅または駅名のクリックで中心駅に設定'}</div>`);
     moveTooltip(event);
 }
+function showBusTooltip(event, d) {
+    hideTooltip();
+    const center = stations.find(s => s.id === centerId);
+    const rd = routeData[centerId] && routeData[centerId][d.id];
+    const routes = d.routes.length > 8 ? d.routes.slice(0, 8).join('・') + ` ほか${d.routes.length - 8}系統` : d.routes.join('・');
+    const value = rd
+        ? `<div class="tooltip-info"><strong>${center.name}${timeBasis()}から:</strong> ${rd.time != null ? rd.time + '分' : '—'} / ${rd.fare != null ? rd.fare + '円' : '—'}</div>
+            ${rd.fareNote ? `<div class="tooltip-hint">運賃（IC）: ${rd.fareNote}</div>` : ''}`
+        : '<div class="tooltip-info">この時刻からは行けません</div>';
+    d3.select('body').append('div').attr('class', 'tooltip').html(`
+        <div class="tooltip-title">${escapeHtml(d.name)}（バス停）</div>
+        <div class="tooltip-info"><strong>${BUS_LABEL}:</strong> ${escapeHtml(routes)}</div>
+        <div class="tooltip-info"><strong>直線距離:</strong> ${d.geo.r.toFixed(1)} km</div>
+        ${value}`);
+    moveTooltip(event);
+}
 function moveTooltip(event) {
     const tip = d3.select('.tooltip');
     if (tip.empty()) return;
@@ -799,7 +877,7 @@ function showLandmarkTooltip(event, d) {
     const where = [d.mapTitle, d.layerName].filter(Boolean).map(escapeHtml).join(' / ');
     let info = '';
     if (a) {
-        const walk = `${a.station.name}${a.station.id === centerId ? '（中心駅）' : '駅'}から徒歩 約${Math.round(a.walk)}分`;
+        const walk = `${placeName(a.station)}から徒歩 約${Math.round(a.walk)}分`;
         info = `<div class="tooltip-info"><strong>${center.name}${timeBasis()}から:</strong> ${a.time != null ? Math.round(a.time) + '分' : '—'} / ${a.fare != null ? a.fare + '円' : '—'}</div>
             <div class="tooltip-hint">${walk}（直線距離の1.3倍を分速80mで歩くとして計算）</div>`;
     }
@@ -849,6 +927,7 @@ function updateLegend() {
         addItem(name, name, item => item.append('div').attr('class', 'legend-color').style('background', lineColor(line)));
     });
     if (edges.some(e => e.line === '徒歩')) addItem('徒歩', '徒歩連絡', item => item.append('div').attr('class', 'legend-walk'));
+    if (busStops.length) addItem(BUS_LABEL, `${BUS_LABEL}（停留所）`, item => item.append('div').attr('class', 'legend-bus').style('background', BUS_COLOR));
 }
 
 function updateStats() {
@@ -940,8 +1019,13 @@ function kmBetween(a, b) {
 function nearStations(lm) {
     const all = stations.map(s => ({ station: s, km: kmBetween(lm, s) })).sort((a, b) => a.km - b.km);
     const near = all.filter(n => n.km <= WALK_NEAR_KM).slice(0, 3);
-    return (near.length ? near : all.slice(0, 1)).map(n => ({ ...n, walk: n.km * 1000 * WALK_DETOUR / WALK_M_PER_MIN }));
+    // バス停も近い順に 3 つまで候補にする
+    const bus = busStops.map(s => ({ station: s, km: kmBetween(lm, s) })).filter(n => n.km <= WALK_NEAR_KM)
+        .sort((a, b) => a.km - b.km).slice(0, 3);
+    return [...(near.length ? near : all.slice(0, 1)), ...bus].map(n => ({ ...n, walk: n.km * 1000 * WALK_DETOUR / WALK_M_PER_MIN }));
 }
+// 「〜駅」「〜（中心駅）」「〜（バス停）」
+const placeName = s => s.name + (s.isBus ? '（バス停）' : s.id === centerId ? '（中心駅）' : '駅');
 
 // 中心駅からの時間（電車＋徒歩）が最も短い近い駅。時間が分からなければ最も近い駅
 function landmarkAccess(lm) {
@@ -1008,7 +1092,7 @@ function renderLandmarkRanking() {
     const sub = r => {
         const parts = [currentMode === 'time' ? fmtFare(r.a) : fmtTime(r.a)];
         if (currentMode !== 'distance') parts.push(`${r.km.toFixed(1)}km`);
-        if (r.a) parts.push(`${r.a.station.name}${r.a.station.id === centerId ? '（中心駅）' : '駅'}から徒歩${Math.round(r.a.walk)}分`);
+        if (r.a) parts.push(`${placeName(r.a.station)}から徒歩${Math.round(r.a.walk)}分`);
         return parts.join(' ・ ');
     };
     const basis = { time: '所要時間', cost: '運賃', distance: '直線距離' }[currentMode];
@@ -1167,7 +1251,7 @@ function setupControls() {
     toggleOpen(document.getElementById('legendBtn'), document.getElementById('legend'));
     // 地図の何もないところをタップしたら、出していた情報を消す
     svg.on('click.tooltip', e => {
-        if (!e.target.closest('.station, .station-label, .landmark, .landmark-label')) { tapPreview = null; hideTooltip(); }
+        if (!e.target.closest('.station, .station-label, .bus-stop, .landmark, .landmark-label')) { tapPreview = null; hideTooltip(); }
     });
     // 共有 URL を同じタブに貼って開き直したときは、その表示にする
     window.addEventListener('hashchange', () => location.reload());
@@ -1282,6 +1366,14 @@ function init() {
         s.transfer = displayLines(s.lines).length > 1 || (neighbors[s.id] || new Set()).size >= 3 || walkNames.has(s.name);
     });
     lineNames = net.lines;
+    if (BUS) {
+        const routesAt = BUS.stops.map(() => new Set());
+        BUS.patterns.forEach(p => p.stops.forEach(i => p.route && routesAt[i].add(p.route)));
+        busStops = BUS.stops.map(([name, lat, lng], i) => ({
+            id: busNodeName(name), name, lat, lng, isBus: true,
+            routes: [...routesAt[i]].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true })),
+        }));
+    }
     centerId = (stations.find(s => s.name === share.center) || stations.find(s => s.name === DEFAULT_CENTER_NAME) || stations[0]).id;
     populateCenterSelect();
     render();

@@ -8,6 +8,7 @@ node_modules/
 keikyu_pdf/
 yokohama_pdf/
 yokohama_gtfs/
+yokohama_bus_gtfs/
 seaside_pdf/
 seaside_html/
 mm_pdf/
