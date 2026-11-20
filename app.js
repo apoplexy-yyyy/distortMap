@@ -90,7 +90,7 @@ let routeData = {};         // centerId -> { stationId: { time, fare, source } |
 const hiddenLines = new Set();   // 凡例のクリックで隠した路線（表示用の路線名。徒歩連絡は「徒歩」）
 let dayType = 'weekday';    // 'weekday'（平日ダイヤ）か 'holiday'（土休日ダイヤ）
 let departTime = null;      // 出発時刻（0 時からの分。0:00〜3:59 は 24:00〜27:59）。null は日中（10〜15 時台）の値
-let timeStat = 'median';    // 出発時刻を決めないときの値: 'median'（平均）・'min'（最小）・'max'（最大）
+let timeStat = 'min';       // 出発時刻を決めないときの値: 'min'（最小。既定）・'median'（平均）・'max'（最大）
 
 let svg, rootLayer, ringLayer, linkSel, nodeSel, labelSel;
 let landmarks = [];         // 表示中のランドマーク（landmarks.js の LandmarkStore.visibleItems() に位置・近い駅を足したもの）
@@ -499,7 +499,7 @@ function fmtClock(min) {
     const m = ((Math.round(min) % 1440) + 1440) % 1440;
     return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
 }
-const STAT_NAMES = { median: '', min: '日中の最小', max: '日中の最大' };
+const STAT_NAMES = { min: '', median: '日中の平均', max: '日中の最大' };   // 既定の最小は書かない
 function timeBasis() {
     if (departTime != null) return ` ${fmtClock(departTime)} 発（${DAY_NAMES[dayType]}）`;
     const parts = [STAT_NAMES[timeStat], dayType === 'holiday' ? '土休日' : ''].filter(Boolean);
@@ -1377,7 +1377,8 @@ function setupControls() {
 //   m=モード  s=歪み(%)  c=中心駅  v=2d|3d  bg=背景地図の濃さ(%)  hide=隠した路線（,区切り）
 //   lm=表示中のマイマップの mid（,区切り）  z=拡大率,横,縦（2D の拡大・移動）
 //   lr=open|closed（近いランドマークの表の開閉。無ければパソコンは開く・スマホは閉じる）  lp=1（ランドマークの設定パネルを開く）
-//   dt=HHMM（出発時刻。無ければ日中の平均）  day=holiday（土休日ダイヤ。無ければ平日）
+//   dt=HHMM（出発時刻。無ければ日中の値）  day=holiday（土休日ダイヤ。無ければ平日）
+//   st=median|max（出発時刻が無いときの日中の平均・最大。無ければ最小）
 function readShareState() {
     const p = new URLSearchParams(location.hash.slice(1));
     const num = (k, lo, hi) => (p.has(k) && isFinite(+p.get(k)) ? Math.min(hi, Math.max(lo, +p.get(k))) : null);
@@ -1396,7 +1397,7 @@ function readShareState() {
         landmarkPanel: p.get('lp') === '1',
         departTime: /^\d{4}$/.test(p.get('dt') || '') ? parseClock(`${p.get('dt').slice(0, 2)}:${p.get('dt').slice(2)}`) : null,
         day: p.get('day') === 'holiday' ? 'holiday' : 'weekday',
-        timeStat: ['min', 'max'].includes(p.get('st')) ? p.get('st') : 'median',
+        timeStat: ['median', 'max'].includes(p.get('st')) ? p.get('st') : 'min',
     };
 }
 
@@ -1415,7 +1416,7 @@ function writeShareState() {
     if (!document.getElementById('landmarkPanel').hidden) p.set('lp', '1');
     if (departTime != null) p.set('dt', fmtClock(departTime).padStart(5, '0').replace(':', ''));
     if (dayType === 'holiday') p.set('day', 'holiday');
-    if (timeStat !== 'median') p.set('st', timeStat);
+    if (timeStat !== 'min') p.set('st', timeStat);
     const t = d3.zoomTransform(svg.node());
     if (t.k !== 1 || t.x || t.y) p.set('z', [+t.k.toFixed(3), Math.round(t.x), Math.round(t.y)].join(','));
     history.replaceState(null, '', '#' + p.toString());
