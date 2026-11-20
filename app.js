@@ -94,7 +94,7 @@ let departTime = null;      // 出発時刻（0 時からの分。0:00〜3:59 �
 let svg, rootLayer, ringLayer, linkSel, nodeSel, labelSel;
 let landmarks = [];         // 表示中のランドマーク（landmarks.js の LandmarkStore.visibleItems() に位置・近い駅を足したもの）
 let landmarkSel, landmarkLabelSel;
-let busStops = [];          // 市営バスの停留所 { id: 'bus:名前', name, lat, lng, routes[], isBus }
+let busStops = [];          // バスの停留所 { id: ノード名, uid, name, lat, lng, routes[], label, color, isBus }
 let busSel;
 let zoomBehavior = null;    // d3.zoom（共有 URL の拡大・移動を戻すときに使う）
 let shareReady = false;     // 共有 URL から表示を戻し終わるまでは URL を書き換えない
@@ -140,17 +140,24 @@ function lineOperators(data, key, label) {
         data: { stations: l.stations, trains: l.trains, trainsHoliday: l.trainsHoliday, fares: data.fares, fareStations: data.stations },
     }));
 }
-// 横浜市営バス（data/yokohama_bus.js）。停留所のノード名は「bus:停留所名」（同じ名前の駅とはまとめない）。
+// バス（data/yokohama_bus.js・data/keikyu_bus.js）。停留所のノード名は「bus:停留所名」（同じ名前の駅とはまとめない。
+// 別の事業者の同じ名前の停留所どうしは乗換でつながる）。同じ事業者に同じ名前の停留所が離れて 2 つ以上あれば「#番号」を付けて分ける。
 // パターン（同じ停留所の並び・所要時間の便）を便ごとの列車データの形に広げる
-const BUS = window.YOKOHAMA_BUS;
-const BUS_LABEL = '市営バス';
-const BUS_COLOR = '#2b8a3e';
+const BUS_SOURCES = [
+    { key: 'bus', label: '市営バス', color: '#2b8a3e', data: window.YOKOHAMA_BUS },
+    // 京急バスは時刻表のオープンデータが無いので、OpenStreetMap の系統と推定の時刻（build_keikyu_bus.py）
+    { key: 'kbus', label: '京急バス（推定）', color: '#e8590c', data: window.KEIKYU_BUS },
+].filter(b => b.data);
+BUS_SOURCES.forEach(b => {
+    const count = {};
+    b.data.stops.forEach(s => (count[s[0]] = (count[s[0]] || 0) + 1));
+    b.nodeNames = b.data.stops.map((s, i) => 'bus:' + s[0] + (count[s[0]] > 1 ? '#' + i : ''));
+});
 const BUS_TRANSFER_KM = 0.3;   // 駅からこの距離（直線）までのバス停に歩いて乗り換えられる
-const busNodeName = name => 'bus:' + name;
-const nodeLabel = name => name.replace(/^bus:/, '');
-function busTrains(day) {
+const nodeLabel = name => name.replace(/^bus:/, '').replace(/#\d+$/, '');
+function busTrains(data, day) {
     const trains = [];
-    BUS.patterns.forEach(p => p[day].forEach(t0 => trains.push([p.route, p.stops.flatMap((s, i) => [s, t0 + p.offsets[i]])])));
+    data.patterns.forEach(p => p[day].forEach(t0 => trains.push([p.route, p.stops.flatMap((s, i) => [s, t0 + p.offsets[i]])])));
     return trains;
 }
 
@@ -166,8 +173,8 @@ const OPERATORS = [
     ...lineOperators(window.TOKYU, 'tokyu', '東急'),
     ...lineOperators(window.JR, 'jr', 'JR'),
     // バスは均一運賃で、乗るたびに払う
-    BUS && { key: 'bus', label: BUS_LABEL, kind: 'bus', dwell: 0, flatFare: BUS.fare,
-        data: { stations: BUS.stops.map(s => busNodeName(s[0])), trains: busTrains('weekday'), trainsHoliday: busTrains('holiday') } },
+    ...BUS_SOURCES.map(b => ({ key: b.key, label: b.label, kind: 'bus', dwell: 0, flatFare: b.data.fare,
+        data: { stations: b.nodeNames, trains: busTrains(b.data, 'weekday'), trainsHoliday: busTrains(b.data, 'holiday') } })),
 ].filter(op => op && op.data);
 // 運賃を通しで数える事業者どうしか（JR の路線どうし、東急の路線どうし。バスは 1 回ごと）
 const sameFare = (a, b) => a.flatFare == null && (a.fareGroup || a.key) === (b.fareGroup || b.key);
@@ -214,9 +221,9 @@ const network = (() => {
         }));
     });
     // 駅と近くのバス停（直線 BUS_TRANSFER_KM 以内）を歩いてつなぐ（道なりは直線の 1.3 倍・分速 80 m、最低 2 分）
-    if (BUS && window.NETWORK) {
-        BUS.stops.forEach(([name, lat, lng]) => {
-            const b = nodeOf['bus|' + busNodeName(name)];
+    if (window.NETWORK) BUS_SOURCES.forEach(src => {
+        src.data.stops.forEach(([, lat, lng], i) => {
+            const b = nodeOf[src.key + '|' + src.nodeNames[i]];
             window.NETWORK.stations.forEach(s => {
                 const km = kmBetween({ lat, lng }, s);
                 if (km > BUS_TRANSFER_KM) return;
@@ -228,7 +235,7 @@ const network = (() => {
                 });
             });
         });
-    }
+    });
     return { nodeOf, nodes, conns, transfers, byName };
 })();
 
@@ -550,7 +557,7 @@ function initSvg() {
     }
     d3.select(mapEl).append('div').attr('class', 'attribution')
         .html('地図: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院（淡色地図）</a>'
-            + ' / ランドマークの一部: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>');
+            + ' / ランドマークの一部・京急バスの系統: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>');
     zoomBehavior = d3.zoom().scaleExtent([0.3, 64]).on('end', writeShareState).on('zoom', e => {
         rootLayer.attr('transform', e.transform);
         BaseMap.setTransform(e.transform);
@@ -592,7 +599,7 @@ function render() {
         .on('mouseout', hideTooltip)
         .on('click', (e, d) => tapOrSelect(e, d, showTooltip, selectCenter));
 
-    busSel = rootLayer.select('.bus-stops').selectAll('circle').data(busStops, d => d.id).join('circle')
+    busSel = rootLayer.select('.bus-stops').selectAll('circle').data(busStops, d => d.uid).join('circle')
         .attr('class', 'bus-stop')
         .on('mouseover', showBusTooltip)
         .on('mousemove', moveTooltip)
@@ -647,8 +654,8 @@ function updateLayout(animate = true, duration = 600) {
         .classed('center', d => d.id === centerId);
     applyZoomScale();
     tr(nodeSel).attr('cx', X).attr('cy', Y);
-    busSel.style('display', hiddenLines.has(BUS_LABEL) ? 'none' : null)
-        .attr('fill', d => (d.missing ? '#bbb' : BUS_COLOR));
+    busSel.style('display', d => (hiddenLines.has(d.label) ? 'none' : null))
+        .attr('fill', d => (d.missing ? '#bbb' : d.color));
     tr(busSel).attr('cx', X).attr('cy', Y);
 
     stations.forEach(s => { s.fx = X(s); s.fy = Y(s); });   // アニメーション後の位置
@@ -838,9 +845,10 @@ function showBusTooltip(event, d) {
         : '<div class="tooltip-info">この時刻からは行けません</div>';
     d3.select('body').append('div').attr('class', 'tooltip').html(`
         <div class="tooltip-title">${escapeHtml(d.name)}（バス停）</div>
-        <div class="tooltip-info"><strong>${BUS_LABEL}:</strong> ${escapeHtml(routes)}</div>
+        <div class="tooltip-info"><strong>${d.label}:</strong> ${escapeHtml(routes)}</div>
         <div class="tooltip-info"><strong>直線距離:</strong> ${d.geo.r.toFixed(1)} km</div>
-        ${value}`);
+        ${value}
+        ${d.estimated ? `<div class="tooltip-hint">京急バスの時刻は推定（OpenStreetMap の系統を、${d.estimated.headway}分おき・時速${d.estimated.speedKmh}km で走るとして計算）</div>` : ''}`);
     moveTooltip(event);
 }
 function moveTooltip(event) {
@@ -927,7 +935,7 @@ function updateLegend() {
         addItem(name, name, item => item.append('div').attr('class', 'legend-color').style('background', lineColor(line)));
     });
     if (edges.some(e => e.line === '徒歩')) addItem('徒歩', '徒歩連絡', item => item.append('div').attr('class', 'legend-walk'));
-    if (busStops.length) addItem(BUS_LABEL, `${BUS_LABEL}（停留所）`, item => item.append('div').attr('class', 'legend-bus').style('background', BUS_COLOR));
+    BUS_SOURCES.forEach(b => addItem(b.label, `${b.label}（停留所）`, item => item.append('div').attr('class', 'legend-bus').style('background', b.color)));
 }
 
 function updateStats() {
@@ -1366,14 +1374,15 @@ function init() {
         s.transfer = displayLines(s.lines).length > 1 || (neighbors[s.id] || new Set()).size >= 3 || walkNames.has(s.name);
     });
     lineNames = net.lines;
-    if (BUS) {
-        const routesAt = BUS.stops.map(() => new Set());
-        BUS.patterns.forEach(p => p.stops.forEach(i => p.route && routesAt[i].add(p.route)));
-        busStops = BUS.stops.map(([name, lat, lng], i) => ({
-            id: busNodeName(name), name, lat, lng, isBus: true,
+    busStops = BUS_SOURCES.flatMap(src => {
+        const routesAt = src.data.stops.map(() => new Set());
+        src.data.patterns.forEach(p => p.stops.forEach(i => p.route && routesAt[i].add(p.route)));
+        return src.data.stops.map(([name, lat, lng], i) => ({
+            id: src.nodeNames[i], uid: src.key + '|' + i, name, lat, lng, isBus: true,
+            label: src.label, color: src.color, estimated: src.data.estimated ? src.data : null,
             routes: [...routesAt[i]].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true })),
         }));
-    }
+    });
     centerId = (stations.find(s => s.name === share.center) || stations.find(s => s.name === DEFAULT_CENTER_NAME) || stations[0]).id;
     populateCenterSelect();
     render();

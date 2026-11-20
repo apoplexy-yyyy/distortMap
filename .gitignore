@@ -9,6 +9,7 @@ keikyu_pdf/
 yokohama_pdf/
 yokohama_gtfs/
 yokohama_bus_gtfs/
+keikyu_bus_osm/
 seaside_pdf/
 seaside_html/
 mm_pdf/
