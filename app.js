@@ -1279,6 +1279,8 @@ function setupControls() {
         sliderValue.textContent = '100%';
         currentMode = 'distance';
         distortionStrength = 1;
+        hiddenLines.clear();   // 凡例で隠した路線・バスもすべて表示に戻す
+        updateLegend();
         const def = stations.find(s => s.name === DEFAULT_CENTER_NAME) || stations[0];
         centerSelect.value = def.id;
         updateModeAvailability();
