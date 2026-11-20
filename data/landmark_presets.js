@@ -11,4 +11,5 @@ window.LANDMARK_PRESETS = [
     { title: '横浜横須賀_美術館・博物館', url: 'https://www.google.com/maps/d/edit?mid=1Uoztr2N_0xbGpo3wYz8h4R-WBqSSWCE' },
     { title: '横浜横須賀_公園・動物園・植物園・水族館', url: 'https://www.google.com/maps/d/edit?mid=1jIa9wc9UB8NwHOtkChi7dn9OxazE0os' },
     { title: '横浜横須賀_銭湯・温泉・サウナ', url: 'https://www.google.com/maps/d/edit?mid=1oge49Llz5yz88IAryqQq-hPq_f5nV3c' },
+    { title: '横浜横須賀_宿泊施設', url: 'https://www.google.com/maps/d/edit?mid=1v8tFnMaoYOte97CQLjq9ActK8xLs7OU' },
 ];
