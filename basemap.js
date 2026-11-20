@@ -54,10 +54,19 @@ const BaseMap = (() => {
         return [x * s, y * s, Math.hypot(x, y)];
     }
 
-    // 緯度経度 → 画面（SVG の viewBox）座標
+    // 緯度経度 → 画面（SVG の viewBox）座標。タイルの頂点は毎フレーム同じ点を計算するので、歪め方ごとに覚えておく
+    //（手がかりの点が多いと warpKm が重く、アニメーション中に描画が遅くなるため）
+    const WARP_CACHE_MAX = 200000;
     function warpPoint(w, lat, lng) {
-        const [x, y] = warpKm(w, lat, lng);
-        return [w.cx + x * w.scale, w.cy + y * w.scale];
+        const cache = w.cache || (w.cache = new Map());
+        const key = lat + ',' + lng;
+        let p = cache.get(key);
+        if (!p) {
+            const [x, y] = warpKm(w, lat, lng);
+            p = [w.cx + x * w.scale, w.cy + y * w.scale];
+            if (cache.size < WARP_CACHE_MAX) cache.set(key, p);
+        }
+        return p;
     }
 
     function currentPoint(lat, lng, a) {

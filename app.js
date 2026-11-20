@@ -154,7 +154,8 @@ BUS_SOURCES.forEach(b => {
     b.data.stops.forEach(s => (count[s[0]] = (count[s[0]] || 0) + 1));
     b.nodeNames = b.data.stops.map((s, i) => 'bus:' + s[0] + (count[s[0]] > 1 ? '#' + i : ''));
 });
-const BUS_TRANSFER_KM = 0.3;   // 駅からこの距離（直線）までのバス停に歩いて乗り換えられる
+const BUS_TRANSFER_KM = 0.8;   // 駅からこの距離（直線）までのバス停に歩いて乗り換えられる
+const BUS_WALK_KM = 0.4;       // バス停どうしは、この距離（直線）まで歩ける
 const nodeLabel = name => name.replace(/^bus:/, '').replace(/#\d+$/, '');
 function busTrains(data, day) {
     const trains = [];
@@ -237,6 +238,21 @@ const network = (() => {
             });
         });
     });
+    // 近くのバス停どうし（直線 BUS_WALK_KM 以内）も歩いてつなぐ（本数の少ない系統しか来ない停留所へ、隣の停留所から歩けるように）
+    const busPts = BUS_SOURCES.flatMap(src => src.data.stops.map(([, lat, lng], i) => ({ lat, lng, n: nodeOf[src.key + '|' + src.nodeNames[i]] })));
+    busPts.sort((p, q) => p.lat - q.lat);
+    const dLat = BUS_WALK_KM / 110.57;
+    for (let i = 0; i < busPts.length; i++) {
+        for (let j = i + 1; j < busPts.length && busPts[j].lat - busPts[i].lat <= dLat; j++) {
+            const p = busPts[i], q = busPts[j];
+            if (p.n === q.n) continue;
+            const km = kmBetween(p, q);
+            if (km > BUS_WALK_KM) continue;
+            const min = Math.max(1, km * 1000 * 1.3 / 80);
+            transfers[p.n].push({ to: q.n, min });
+            transfers[q.n].push({ to: p.n, min });
+        }
+    }
     return { nodeOf, nodes, conns, transfers, byName };
 })();
 
@@ -721,13 +737,26 @@ const labelPriority = (a, b) => (b.id === centerId) - (a.id === centerId) || b.t
     || b.lines.length - a.lines.length;
 
 // 背景地図の歪め方: 駅ごとの伸縮率（歪めた後の距離 ÷ 実際の距離）と、画面への縮尺
+const WARP_BUS_CELL_KM = 0.3;
 function buildWarp(cx, cy, scale) {
     const center = stations.find(s => s.id === centerId);
     const points = stations
         .filter(s => s.id !== centerId && !s.missing && s.geo.r > 0.05)   // データなしの駅は歪めに使わない
         .map(s => ({ x: s.geo.x, y: s.geo.y, s: Math.hypot(s.px, s.py) / s.geo.r }));
+    // 表示中のバス停も使う（使わないと、駅から離れたバス停が歪めた地図の海の上などに出る）。
+    // 数が多いと背景の描画が重くなるので、WARP_BUS_CELL_KM 四方に 1 つまでにする
+    const cells = new Set();
+    const busPoints = busStops
+        .filter(b => !b.missing && !hiddenLines.has(b.label) && b.geo.r > 0.05)
+        .filter(b => {
+            const key = Math.floor(b.geo.x / WARP_BUS_CELL_KM) + ',' + Math.floor(b.geo.y / WARP_BUS_CELL_KM);
+            if (cells.has(key)) return false;
+            cells.add(key);
+            return true;
+        })
+        .map(b => ({ x: b.geo.x, y: b.geo.y, s: Math.hypot(b.px, b.py) / b.geo.r }));
     return {
-        lat0: center.lat, lng0: center.lng, cx, cy, scale, points,
+        lat0: center.lat, lng0: center.lng, cx, cy, scale, points: points.concat(busPoints),
         typicalScale: points.length ? median(points.map(p => p.s)) : 1,
         bounds: {
             minLat: d3.min(stations, s => s.lat), maxLat: d3.max(stations, s => s.lat),
