@@ -145,7 +145,7 @@ function lineOperators(data, key, label) {
 // パターン（同じ停留所の並び・所要時間の便）を便ごとの列車データの形に広げる
 const BUS_SOURCES = [
     { key: 'bus', label: '市営バス', color: '#2b8a3e', data: window.YOKOHAMA_BUS },
-    // 京急バスは時刻表のオープンデータが無いので、OpenStreetMap の系統と推定の時刻（build_keikyu_bus.py）
+    // 京急バスは時刻表のオープンデータが無いので、国土数値情報の系統・運行本数から推定した時刻（build_keikyu_bus.py）
     { key: 'kbus', label: '京急バス（推定）', color: '#e8590c', data: window.KEIKYU_BUS },
 ].filter(b => b.data);
 BUS_SOURCES.forEach(b => {
@@ -557,7 +557,8 @@ function initSvg() {
     }
     d3.select(mapEl).append('div').attr('class', 'attribution')
         .html('地図: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院（淡色地図）</a>'
-            + ' / ランドマークの一部・京急バスの系統: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>');
+            + ' / ランドマークの一部: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>'
+            + ' / 京急バス: <a href="https://nlftp.mlit.go.jp/ksj/" target="_blank" rel="noopener">国土数値情報（バス停留所・バスルート）</a>（国土交通省）を加工して作成');
     zoomBehavior = d3.zoom().scaleExtent([0.3, 64]).on('end', writeShareState).on('zoom', e => {
         rootLayer.attr('transform', e.transform);
         BaseMap.setTransform(e.transform);
@@ -848,7 +849,7 @@ function showBusTooltip(event, d) {
         <div class="tooltip-info"><strong>${d.label}:</strong> ${escapeHtml(routes)}</div>
         <div class="tooltip-info"><strong>直線距離:</strong> ${d.geo.r.toFixed(1)} km</div>
         ${value}
-        ${d.estimated ? `<div class="tooltip-hint">京急バスの時刻は推定（OpenStreetMap の系統を、${d.estimated.headway}分おき・時速${d.estimated.speedKmh}km で走るとして計算）</div>` : ''}`);
+        ${d.estimated ? `<div class="tooltip-hint">時刻は推定: ${escapeHtml(d.estimated.note)}</div>` : ''}`);
     moveTooltip(event);
 }
 function moveTooltip(event) {
