@@ -156,6 +156,7 @@ BUS_SOURCES.forEach(b => {
 });
 const BUS_TRANSFER_KM = 0.8;   // 駅からこの距離（直線）までのバス停に歩いて乗り換えられる
 const BUS_WALK_KM = 0.4;       // バス停どうしは、この距離（直線）まで歩ける
+const BUS_LINK_DETOUR = 1.3;
 const nodeLabel = name => name.replace(/^bus:/, '').replace(/#\d+$/, '');
 function busTrains(data, day) {
     const trains = [];
@@ -1445,6 +1446,20 @@ function init() {
         linkSeen.add(key);
         return { s: stopByUid[src.key + '|' + a], t: stopByUid[src.key + '|' + s], label: src.label, color: src.color };
     }).filter(Boolean)));
+    // 停留所を飛ばす便（急行や一方通行の循環など）の A–C の線は、間に A–B・B–C とつながる停留所 B が
+    // ほぼ通り道にある（遠回りが BUS_LINK_DETOUR 倍まで）なら描かない（三角形だらけで見づらいため。経路の計算には使う）
+    const linkNeighbors = new Map();
+    busLinks.forEach(l => {
+        if (!linkNeighbors.has(l.s)) linkNeighbors.set(l.s, new Set());
+        if (!linkNeighbors.has(l.t)) linkNeighbors.set(l.t, new Set());
+        linkNeighbors.get(l.s).add(l.t);
+        linkNeighbors.get(l.t).add(l.s);
+    });
+    busLinks = busLinks.filter(l => {
+        const direct = kmBetween(l.s, l.t);
+        return ![...linkNeighbors.get(l.s)].some(b => b !== l.t && linkNeighbors.get(b).has(l.t)
+            && kmBetween(l.s, b) + kmBetween(b, l.t) <= direct * BUS_LINK_DETOUR);
+    });
     centerId = (stations.find(s => s.name === share.center) || stations.find(s => s.name === DEFAULT_CENTER_NAME) || stations[0]).id;
     populateCenterSelect();
     render();
