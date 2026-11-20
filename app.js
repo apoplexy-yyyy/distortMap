@@ -696,8 +696,9 @@ function updateLayout(animate = true, duration = 600) {
     tr(busLinkSel).attr('x1', d => X(d.s)).attr('y1', d => Y(d.s)).attr('x2', d => X(d.t)).attr('y2', d => Y(d.t));
 
     stations.forEach(s => { s.fx = X(s); s.fy = Y(s); });   // アニメーション後の位置
+    placeLandmarks(k);                       // 値の分かるランドマークの位置（背景の歪めにも使う）
     const warp = buildWarp(cx, cy, scale);
-    placeLandmarks(k, warp);
+    placeLandmarks(k, warp);                 // 地図上の位置は背景と同じ歪め方で（海の上などに出ない）
     landmarks.forEach(lm => {
         lm.fx = cx + lm.km[0] * scale;
         lm.fy = cy + lm.km[1] * scale;
@@ -756,8 +757,20 @@ function buildWarp(cx, cy, scale) {
             return true;
         })
         .map(b => ({ x: b.geo.x, y: b.geo.y, s: Math.hypot(b.px, b.py) / b.geo.r }));
+    // 表示中のランドマークも使う（値の分かるもの。使わないと、海沿いのランドマークが歪めた地図の海の上などに出る）。
+    // バス停と同じく WARP_BUS_CELL_KM 四方に 1 つまで
+    const lmCells = new Set();
+    const landmarkPoints = landmarks
+        .filter(lm => lm.radial && lm.radial[2] > 0.05)
+        .filter(lm => {
+            const key = Math.floor(lm.radial[3] / WARP_BUS_CELL_KM) + ',' + Math.floor(lm.radial[4] / WARP_BUS_CELL_KM);
+            if (lmCells.has(key)) return false;
+            lmCells.add(key);
+            return true;
+        })
+        .map(lm => ({ x: lm.radial[3], y: lm.radial[4], s: Math.hypot(lm.radial[0], lm.radial[1]) / lm.radial[2] }));
     return {
-        lat0: center.lat, lng0: center.lng, cx, cy, scale, points: points.concat(busPoints),
+        lat0: center.lat, lng0: center.lng, cx, cy, scale, points: points.concat(busPoints, landmarkPoints),
         typicalScale: points.length ? median(points.map(p => p.s)) : 1,
         bounds: {
             minLat: d3.min(stations, s => s.lat), maxLat: d3.max(stations, s => s.lat),
@@ -1107,8 +1120,10 @@ function landmarkAccess(lm) {
 }
 
 // ランドマークの位置（中心駅からの km 座標 lm.km = [東, 南, 実際の距離]）。駅と同じ決め方で、
-// 方角は実際の方角のまま、中心からの距離を「自分の値（時間＝最寄り駅までの時間＋徒歩、運賃＝その駅の運賃）」にする。
-// 値が分からないランドマークは、背景地図と同じ歪め方の位置に置く
+// 方角は実際の方角のまま、中心からの距離を「自分の値（時間＝最寄り駅までの時間＋徒歩、運賃＝その駅の運賃）」にした点を
+// 背景地図の歪めの手がかりにし、地図上には背景と同じ歪め方の位置に置く。
+// 2 回呼ぶ: warp なし … 値の分かるランドマークの位置（lm.radial = [x, y, 実際の距離, 実際の x, 実際の y]）を決める
+//（buildWarp が背景の歪めに使う）。warp あり … lm.km を決める
 function placeLandmarks(k, warp) {
     const center = stations.find(s => s.id === centerId);
     const t = distortionStrength;
@@ -1117,15 +1132,19 @@ function placeLandmarks(k, warp) {
         const gx = (lm.lng - center.lng) * 111.32 * Math.cos(latMid);
         const gy = -(lm.lat - center.lat) * 110.57;
         const gr = Math.hypot(gx, gy);
-        const a = currentMode === 'distance' ? null : landmarkAccess(lm);
-        const v = a ? (currentMode === 'time' ? a.time : a.fare) : null;
-        if (currentMode === 'distance' || k == null || v == null) {
-            lm.km = currentMode === 'distance' ? [gx, gy, gr] : BaseMap.warpKm(warp, lm.lat, lm.lng);
+        if (!warp) {
+            const a = currentMode === 'distance' ? null : landmarkAccess(lm);
+            const v = a ? (currentMode === 'time' ? a.time : a.fare) : null;
+            if (currentMode === 'distance' || k == null || v == null) { lm.radial = null; return; }
+            const r = (1 - t) * gr + t * k * v;
+            const angle = Math.atan2(gy, gx);
+            lm.radial = [Math.cos(angle) * r, Math.sin(angle) * r, gr, gx, gy];
             return;
         }
-        const r = (1 - t) * gr + t * k * v;
-        const angle = Math.atan2(gy, gx);
-        lm.km = [Math.cos(angle) * r, Math.sin(angle) * r, gr];
+        // 背景と同じ歪め方の位置に置く（背景地図の上の本当の場所に出るので、海の上などに飛び出さない）。
+        // 値の分かるランドマークは背景の歪めに使っているので、ほぼ自分の値の距離になる
+        //（近くに値の大きく違う駅・バス停・ランドマークがあるときだけ、背景に合わせて少しずれる）
+        lm.km = currentMode === 'distance' ? [gx, gy, gr] : BaseMap.warpKm(warp, lm.lat, lm.lng);
     });
 }
 
