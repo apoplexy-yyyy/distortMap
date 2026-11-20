@@ -205,8 +205,6 @@ const network = (() => {
                 }
             }));
     });
-    conns.weekday.sort((a, b) => a.dep - b.dep);
-    conns.holiday.sort((a, b) => a.dep - b.dep);
     // 乗換: 同じ駅名のノードどうしと、徒歩連絡の駅どうし
     const transfers = nodes.map(() => []);
     const byName = {};
@@ -255,82 +253,122 @@ const network = (() => {
             transfers[q.n].push({ to: p.n, min });
         }
     }
-    return { nodeOf, nodes, conns, transfers, byName };
+    // 経路探索で何十万回も読むので、区間と乗換は数値だけの配列（型付き配列）にする。
+    // 区間は発車順に並べ、列車は 0 からの番号にする
+    const tripNo = new Map();
+    const pack = list => {
+        list.sort((a, b) => a.dep - b.dep);
+        const n = list.length;
+        const c = { n, from: new Int32Array(n), to: new Int32Array(n), dep: new Float64Array(n), arr: new Float64Array(n), trip: new Int32Array(n) };
+        list.forEach((x, k) => {
+            if (!tripNo.has(x.trip)) tripNo.set(x.trip, tripNo.size);
+            c.from[k] = x.from; c.to[k] = x.to; c.dep[k] = x.dep; c.arr[k] = x.arr; c.trip[k] = tripNo.get(x.trip);
+        });
+        return c;
+    };
+    const packed = { weekday: pack(conns.weekday), holiday: pack(conns.holiday) };
+    const trOff = new Int32Array(nodes.length + 1);
+    transfers.forEach((list, i) => { trOff[i + 1] = trOff[i] + list.length; });
+    const trTo = new Int32Array(trOff[nodes.length]), trMin = new Float64Array(trOff[nodes.length]);
+    transfers.forEach((list, i) => list.forEach((tr, k) => { trTo[trOff[i] + k] = tr.to; trMin[trOff[i] + k] = tr.min; }));
+    // ノードの駅名を番号にしておく（日中の値の計算で、駅名ごとに最も早い到着をまとめるのに使う）
+    const names = Object.keys(byName);
+    const nameNo = Object.fromEntries(names.map((name, i) => [name, i]));
+    const nodeName = Int32Array.from(nodes, n => nameNo[n.name]);
+    return { nodeOf, nodes, conns: packed, tripCount: tripNo.size, transfers, trOff, trTo, trMin, byName, names, nameNo, nodeName };
 })();
 
 // 中心駅を t0 に出発したときの各ノードへの最早到着時刻（Connection Scan Algorithm）
-// parent には経路をたどるための情報を残す: { src } | { walkFrom: ノード } | { enter: 乗った区間, exit: 降りた区間 }
+// parent には経路をたどるための情報を残す（数値の配列）: kind[n] = 1 中心駅 / 2 徒歩（a = 歩き始めたノード）/
+// 3 乗車（a = 乗った区間、b = 降りた区間）
+const P_SRC = 1, P_WALK = 2, P_RIDE = 3;
 function earliestArrivals(srcNodes, t0) {
-    const arr = new Array(network.nodes.length).fill(Infinity);
-    const parent = new Array(network.nodes.length).fill(null);
-    const boarded = new Map();   // 列車 -> 最初に乗った区間
-    const reach = (n, t, p) => {
+    const N = network.nodes.length;
+    const { trOff, trTo, trMin } = network;
+    const arr = new Float64Array(N).fill(Infinity);
+    const kind = new Int8Array(N), pa = new Int32Array(N), pb = new Int32Array(N);
+    const boarded = new Int32Array(network.tripCount).fill(-1);   // 列車 -> 最初に乗った区間
+    const reach = (n, t, k, a, b) => {
         if (t >= arr[n]) return;
-        arr[n] = t;
-        parent[n] = p;
-        network.transfers[n].forEach(tr => {
-            if (t + tr.min < arr[tr.to]) { arr[tr.to] = t + tr.min; parent[tr.to] = { walkFrom: n }; }
-        });
+        arr[n] = t; kind[n] = k; pa[n] = a; pb[n] = b;
+        for (let e = trOff[n]; e < trOff[n + 1]; e++) {
+            const m = trTo[e], tt = t + trMin[e];
+            if (tt < arr[m]) { arr[m] = tt; kind[m] = P_WALK; pa[m] = n; }
+        }
     };
-    srcNodes.forEach(n => reach(n, t0, { src: true }));   // 中心駅から徒歩連絡の駅へ歩いて乗ることもある
+    srcNodes.forEach(n => reach(n, t0, P_SRC, 0, 0));   // 中心駅から徒歩連絡の駅へ歩いて乗ることもある
     // 区間は発車順なので、t0 に発車する最初の区間を二分探索で探してそこから見る
-    const conns = network.conns[dayType];
-    let lo = 0, hi = conns.length;
+    const c = network.conns[dayType];
+    let lo = 0, hi = c.n;
     while (lo < hi) {
         const mid = (lo + hi) >> 1;
-        if (conns[mid].dep < t0) lo = mid + 1; else hi = mid;
+        if (c.dep[mid] < t0) lo = mid + 1; else hi = mid;
     }
-    for (let k = lo; k < conns.length; k++) {
-        const c = conns[k];
-        if (c.dep > t0 + 240) break;   // 4 時間より先は使わない
-        const onTrip = boarded.has(c.trip);
-        if (onTrip || arr[c.from] <= c.dep) {
-            if (!onTrip) boarded.set(c.trip, c);
-            reach(c.to, c.arr, { enter: boarded.get(c.trip), exit: c });
+    const until = t0 + 240;   // 4 時間より先は使わない
+    for (let k = lo; k < c.n; k++) {
+        const dep = c.dep[k];
+        if (dep > until) break;
+        const trip = c.trip[k];
+        if (boarded[trip] >= 0 || arr[c.from[k]] <= dep) {
+            if (boarded[trip] < 0) boarded[trip] = k;
+            reach(c.to[k], c.arr[k], P_RIDE, boarded[trip], k);
         }
     }
-    return { arr, parent };
+    return { arr, parent: { kind, pa, pb } };
 }
 
-// ノード target までの経路の運賃。同じ事業者の列車が続く区間は 1 回の乗車として運賃を数え、事業者ごとに足す
-function journeyFare(parent, target) {
-    const steps = [];   // 古い順: { op, from, to }（駅名）または { walk: 説明 }
+// ノード target までの経路（乗車と徒歩）と運賃。同じ事業者の列車が続く区間は 1 回の乗車として運賃を数え、事業者ごとに足す。
+// 候補がとても多いので、説明の文字列はここでは作らず fareNote で作る
+function journeyRides(parent, target) {
+    const { kind, pa, pb } = parent;
+    const c = network.conns[dayType];
+    const steps = [];   // 新しい順: { op, from, to }（駅名）または { walk: [駅名, 駅名] }
     for (let n = target, guard = 0; guard < 200; guard++) {
-        const p = parent[n];
-        if (!p) return null;
-        if (p.src) break;
-        if (p.walkFrom != null) {
-            const a = network.nodes[p.walkFrom].name, b = network.nodes[n].name;
-            if (a !== b) steps.unshift({ walk: `${nodeLabel(a)}〜${nodeLabel(b)} 徒歩` });
-            n = p.walkFrom;
+        const k = kind[n];
+        if (!k) return null;
+        if (k === P_SRC) break;
+        if (k === P_WALK) {
+            const a = network.nodes[pa[n]].name, b = network.nodes[n].name;
+            if (a !== b) steps.push({ walk: [a, b] });
+            n = pa[n];
             continue;
         }
-        steps.unshift({ op: network.nodes[p.exit.to].op, from: network.nodes[p.enter.from].name, to: network.nodes[p.exit.to].name });
-        n = p.enter.from;
+        const to = c.to[pb[n]], from = c.from[pa[n]];
+        steps.push({ op: network.nodes[to].op, from: network.nodes[from].name, to: network.nodes[to].name });
+        n = from;
     }
-    const rides = [], ways = [];
-    steps.forEach(st => {
-        if (st.walk) { ways.push(st.walk); return; }
+    const rides = [], ways = [];   // ways: { walk: [a, b] } か { change: 駅名 }
+    for (let k = steps.length - 1; k >= 0; k--) {
+        const st = steps[k];
+        if (st.walk) { ways.push(st); continue; }
         const last = rides[rides.length - 1];
         if (last && sameFare(last.op, st.op) && last.to === st.from) last.to = st.to;
         else {
-            if (last && last.to === st.from) ways.push(`${nodeLabel(st.from)}乗換`);   // 同じ駅で別の事業者に乗り換え
-            rides.push({ ...st });
+            if (last && last.to === st.from) ways.push({ change: st.from });   // 同じ駅で別の事業者に乗り換え
+            rides.push({ op: st.op, from: st.from, to: st.to });
         }
-    });
-    let fare = 0;
-    const parts = [];
-    for (const r of rides) {
-        const f = fareOf(r.op, r.from, r.to);
-        if (f == null) return null;
-        fare += f;
-        parts.push(`${r.op.label} ${f}円`);
     }
-    const how = [...new Set(ways)].join('・');
-    return { fare, note: (parts.join('＋') || '徒歩のみ') + (how ? `（${how}）` : '') };
+    let fare = 0;
+    for (const r of rides) {
+        r.fare = fareOf(r.op, r.from, r.to);
+        if (r.fare == null) return null;
+        fare += r.fare;
+    }
+    return { fare, rides, ways };
+}
+// 運賃の内訳の説明（例「京急 300円＋市営バス 220円（横浜〜横浜駅前 徒歩）」）
+function fareNote(j) {
+    const parts = j.rides.map(r => `${r.op.label} ${r.fare}円`);
+    const how = [...new Set(j.ways.map(w => (w.walk ? `${nodeLabel(w.walk[0])}〜${nodeLabel(w.walk[1])} 徒歩` : `${nodeLabel(w.change)}乗換`)))].join('・');
+    return (parts.join('＋') || '徒歩のみ') + (how ? `（${how}）` : '');
+}
+function journeyFare(parent, target) {
+    const j = journeyRides(parent, target);
+    return j && { fare: j.fare, note: fareNote(j) };
 }
 
-// 中心駅から各駅（駅名）への最短の所要時間（分）と、その経路の運賃
+// 中心駅から各駅（駅名）への最短の所要時間（分）と、その経路の運賃。
+// 出発時刻が無いときは { min, median, max }（日中の最小・平均・最大）をまとめて返す
 function routesFrom(centerName) {
     const src = network.byName[centerName] || [];
     // 出発時刻の指定があるとき: その時刻に中心駅にいて、最初の電車を待つ時間も含めた所要時間
@@ -352,54 +390,66 @@ function routesFrom(centerName) {
     src.forEach(n => network.transfers[n].forEach(tr => {
         if (!startAt.has(tr.to) || tr.min < startAt.get(tr.to)) startAt.set(tr.to, tr.min);
     }));
-    const starts = [...new Set(network.conns[dayType]
-        .filter(c => startAt.has(c.from) && network.nodes[c.from].op.kind !== 'bus' && TIME_WINDOW_HOURS.includes(Math.floor((c.dep - startAt.get(c.from)) / 60)))
-        .map(c => c.dep - startAt.get(c.from)))];
-    const hourlyBest = {};   // 駅名 -> { 時: { time, fare, note } }（各時台で最も速い経路。同じ速さなら安い方）
-    const extreme = {};      // 駅名 -> 最小・最大のときの経路（どの発車で出ても、その発車からの最も早い到着で数える）
+    const c = network.conns[dayType];
+    const startSet = new Set();
+    for (let k = 0; k < c.n; k++) {
+        const from = c.from[k];
+        if (!startAt.has(from) || network.nodes[from].op.kind === 'bus') continue;
+        const t = c.dep[k] - startAt.get(from);
+        if (TIME_WINDOW_HOURS.includes(Math.floor(t / 60))) startSet.add(t);
+    }
+    const starts = [...startSet];
+    const N = network.nodes.length, M = network.names.length, nodeName = network.nodeName;
+    const nameNodes = network.names.map(name => network.byName[name]);
+    const centerNo = network.nameNo[centerName];
+    // 駅名（番号）ごとの候補 { time, fare, j: journeyRides の結果 }
+    const hourly = new Array(M);   // 駅名 -> { 時: 候補 }（各時台で最も速い経路。同じ速さなら安い方）
+    const lo = new Array(M), hi = new Array(M);   // 最小・最大のときの経路（どの発車で出ても、その発車からの最も早い到着で数える）
     const better = (a, b) => !b || a.time < b.time || (a.time === b.time && (a.fare ?? Infinity) < (b.fare ?? Infinity));
     const worse = (a, b) => !b || a.time > b.time || (a.time === b.time && (a.fare ?? Infinity) < (b.fare ?? Infinity));
+    const minArr = new Float64Array(M);
     starts.forEach(t0 => {
         const h = Math.floor(t0 / 60);
         const { arr, parent } = earliestArrivals(src, t0);
-        if (timeStat !== 'median') {
-            // この発車での各駅名への最も早い到着（同じ駅名の事業者ごとのノードのうち最も早いもの）
-            const fastest = {};
-            arr.forEach((a, i) => {
-                const name = network.nodes[i].name;
-                if (!isFinite(a) || name === centerName) return;
-                if (!(name in fastest) || a < arr[fastest[name]]) fastest[name] = i;
-            });
-            Object.entries(fastest).forEach(([name, i]) => {
-                const time = arr[i] - t0, prev = extreme[name];
-                if (prev && (timeStat === 'min' ? time > prev.time : time < prev.time)) return;
-                const cand = { time, ...(journeyFare(parent, i) || { fare: null, note: null }) };
-                if ((timeStat === 'min' ? better : worse)(cand, prev)) extreme[name] = cand;
-            });
-            return;
+        // この発車での各駅名への最も早い到着（同じ駅名の事業者ごとのノードのうち最も早いもの）
+        minArr.fill(Infinity);
+        for (let i = 0; i < N; i++) if (arr[i] < minArr[nodeName[i]]) minArr[nodeName[i]] = arr[i];
+        const seen = new Uint8Array(M);
+        for (let i = 0; i < N; i++) {
+            const m = nodeName[i];
+            if (m === centerNo || seen[m] || arr[i] === Infinity || arr[i] !== minArr[m]) continue;
+            seen[m] = 1;
+            const time = arr[i] - t0;
+            const byHour = hourly[m] || (hourly[m] = {});
+            const needHour = !byHour[h] || time <= byHour[h].time;
+            const needLo = !lo[m] || time <= lo[m].time;
+            const needHi = !hi[m] || time >= hi[m].time;
+            if (!needHour && !needLo && !needHi) continue;
+            // 運賃は必要なときだけ計算する（同じ到着のノードが複数あれば安い方）
+            let cand = null;
+            for (const i2 of nameNodes[m]) {
+                if (arr[i2] !== minArr[m]) continue;
+                const jr = journeyRides(parent, i2);
+                const f = { time, fare: jr ? jr.fare : null, j: jr };
+                if (better(f, cand)) cand = f;
+            }
+            if (needHour && better(cand, byHour[h])) byHour[h] = cand;
+            if (needLo && better(cand, lo[m])) lo[m] = cand;
+            if (needHi && worse(cand, hi[m])) hi[m] = cand;
         }
-        arr.forEach((a, i) => {
-            const name = network.nodes[i].name;
-            if (!isFinite(a) || name === centerName) return;
-            const time = a - t0;
-            const best = (hourlyBest[name] = hourlyBest[name] || {});
-            const cand = { time };
-            if (!better(cand, best[h]) && !(best[h] && cand.time === best[h].time)) return;
-            Object.assign(cand, journeyFare(parent, i) || { fare: null, note: null });
-            if (better(cand, best[h])) best[h] = cand;
-        });
     });
-    const result = {};
-    if (timeStat !== 'median') {
-        Object.entries(extreme).forEach(([name, e]) => { result[name] = { time: Math.round(e.time), fare: e.fare, note: e.note }; });
-        return result;
+    const out = e => ({ time: Math.round(e.time), fare: e.fare, note: e.j ? fareNote(e.j) : null });
+    const result = { min: {}, median: {}, max: {} };
+    for (let m = 0; m < M; m++) {
+        const name = network.names[m];
+        if (lo[m]) result.min[name] = out(lo[m]);
+        if (hi[m]) result.max[name] = out(hi[m]);
+        // 平均: 各時台の最速の経路のうち、所要時間が中央の時台のもの（データの読み取りミスに強くするため）
+        if (hourly[m]) {
+            const list = Object.values(hourly[m]).sort((a, b) => a.time - b.time || (a.fare ?? Infinity) - (b.fare ?? Infinity));
+            result.median[name] = out(list[Math.floor((list.length - 1) / 2)]);
+        }
     }
-    // 各時台の最速の経路のうち、所要時間が中央の時台のものを採用する（データの読み取りミスに強くするため）
-    Object.entries(hourlyBest).forEach(([name, byHour]) => {
-        const list = Object.values(byHour).sort((a, b) => a.time - b.time || (a.fare ?? Infinity) - (b.fare ?? Infinity));
-        const pick = list[Math.floor((list.length - 1) / 2)];
-        result[name] = { time: Math.round(pick.time), fare: pick.fare, note: pick.note };
-    });
     return result;
 }
 
@@ -465,12 +515,24 @@ function cheapestFares(fromName) {
 }
 
 // --- 5. 中心駅から各駅への時間・運賃 --------------------------------------
+// 経路探索の結果は「ダイヤ・出発時刻・中心駅」ごとに覚えておく（日中の最小・平均・最大の切り替えは計算し直さない）
+const routeCache = new Map();
+const ROUTE_CACHE_MAX = 40;
+function routesFor(centerName) {
+    const key = `${dayType}|${departTime}|${centerName}`;
+    let c = routeCache.get(key);
+    if (!c) {
+        c = { routes: routesFrom(centerName), cheap: cheapestFares(centerName) };
+        routeCache.set(key, c);
+        if (routeCache.size > ROUTE_CACHE_MAX) routeCache.delete(routeCache.keys().next().value);
+    }
+    return { routes: departTime != null ? c.routes : c.routes[timeStat], cheap: c.cheap };
+}
 function computeRouteData(cid) {
     if (routeData[cid]) return routeData[cid];
     const center = stations.find(s => s.id === cid);
     const result = { [cid]: { time: 0, fare: 0 } };
-    const routes = routesFrom(center.name);
-    const cheap = cheapestFares(center.name);
+    const { routes, cheap } = routesFor(center.name);
     stations.forEach(s => {
         const r = routes[s.name];
         if (s.id === cid) return;
