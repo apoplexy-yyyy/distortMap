@@ -89,7 +89,8 @@ let centerId = null;
 let routeData = {};         // centerId -> { stationId: { time, fare, source } | null }
 const hiddenLines = new Set();   // 凡例のクリックで隠した路線（表示用の路線名。徒歩連絡は「徒歩」）
 let dayType = 'weekday';    // 'weekday'（平日ダイヤ）か 'holiday'（土休日ダイヤ）
-let departTime = null;      // 出発時刻（0 時からの分。0:00〜3:59 は 24:00〜27:59）。null は日中の平均（10〜15 時台）
+let departTime = null;      // 出発時刻（0 時からの分。0:00〜3:59 は 24:00〜27:59）。null は日中（10〜15 時台）の値
+let timeStat = 'median';    // 出発時刻を決めないときの値: 'median'（平均）・'min'（最小）・'max'（最大）
 
 let svg, rootLayer, ringLayer, linkSel, nodeSel, labelSel;
 let landmarks = [];         // 表示中のランドマーク（landmarks.js の LandmarkStore.visibleItems() に位置・近い駅を足したもの）
@@ -355,22 +356,45 @@ function routesFrom(centerName) {
         .filter(c => startAt.has(c.from) && network.nodes[c.from].op.kind !== 'bus' && TIME_WINDOW_HOURS.includes(Math.floor((c.dep - startAt.get(c.from)) / 60)))
         .map(c => c.dep - startAt.get(c.from)))];
     const hourlyBest = {};   // 駅名 -> { 時: { time, fare, note } }（各時台で最も速い経路。同じ速さなら安い方）
+    const extreme = {};      // 駅名 -> 最小・最大のときの経路（どの発車で出ても、その発車からの最も早い到着で数える）
     const better = (a, b) => !b || a.time < b.time || (a.time === b.time && (a.fare ?? Infinity) < (b.fare ?? Infinity));
+    const worse = (a, b) => !b || a.time > b.time || (a.time === b.time && (a.fare ?? Infinity) < (b.fare ?? Infinity));
     starts.forEach(t0 => {
         const h = Math.floor(t0 / 60);
         const { arr, parent } = earliestArrivals(src, t0);
+        if (timeStat !== 'median') {
+            // この発車での各駅名への最も早い到着（同じ駅名の事業者ごとのノードのうち最も早いもの）
+            const fastest = {};
+            arr.forEach((a, i) => {
+                const name = network.nodes[i].name;
+                if (!isFinite(a) || name === centerName) return;
+                if (!(name in fastest) || a < arr[fastest[name]]) fastest[name] = i;
+            });
+            Object.entries(fastest).forEach(([name, i]) => {
+                const time = arr[i] - t0, prev = extreme[name];
+                if (prev && (timeStat === 'min' ? time > prev.time : time < prev.time)) return;
+                const cand = { time, ...(journeyFare(parent, i) || { fare: null, note: null }) };
+                if ((timeStat === 'min' ? better : worse)(cand, prev)) extreme[name] = cand;
+            });
+            return;
+        }
         arr.forEach((a, i) => {
             const name = network.nodes[i].name;
             if (!isFinite(a) || name === centerName) return;
+            const time = a - t0;
             const best = (hourlyBest[name] = hourlyBest[name] || {});
-            const cand = { time: a - t0 };
+            const cand = { time };
             if (!better(cand, best[h]) && !(best[h] && cand.time === best[h].time)) return;
             Object.assign(cand, journeyFare(parent, i) || { fare: null, note: null });
             if (better(cand, best[h])) best[h] = cand;
         });
     });
-    // 各時台の最速の経路のうち、所要時間が中央の時台のものを採用する（データの読み取りミスに強くするため）
     const result = {};
+    if (timeStat !== 'median') {
+        Object.entries(extreme).forEach(([name, e]) => { result[name] = { time: Math.round(e.time), fare: e.fare, note: e.note }; });
+        return result;
+    }
+    // 各時台の最速の経路のうち、所要時間が中央の時台のものを採用する（データの読み取りミスに強くするため）
     Object.entries(hourlyBest).forEach(([name, byHour]) => {
         const list = Object.values(byHour).sort((a, b) => a.time - b.time || (a.fare ?? Infinity) - (b.fare ?? Infinity));
         const pick = list[Math.floor((list.length - 1) / 2)];
@@ -475,9 +499,11 @@ function fmtClock(min) {
     const m = ((Math.round(min) % 1440) + 1440) % 1440;
     return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
 }
+const STAT_NAMES = { median: '', min: '日中の最小', max: '日中の最大' };
 function timeBasis() {
     if (departTime != null) return ` ${fmtClock(departTime)} 発（${DAY_NAMES[dayType]}）`;
-    return dayType === 'holiday' ? '（土休日）' : '';
+    const parts = [STAT_NAMES[timeStat], dayType === 'holiday' ? '土休日' : ''].filter(Boolean);
+    return parts.length ? `（${parts.join('・')}）` : '';
 }
 
 function describeData(cid) {
@@ -1065,7 +1091,7 @@ function stopDepartPlay() {
 }
 function updateDepartLabel() {
     document.getElementById('departClear').hidden = departTime == null;
-    document.getElementById('departHint').textContent = departTime == null ? '日中の平均' : '';
+    document.getElementById('timeStat').hidden = departTime != null;   // 時刻を決めたときは、その時刻の値なので使わない
 }
 
 // 地図上の駅（丸・駅名のクリック）を中心駅にする
@@ -1322,6 +1348,7 @@ function setupControls() {
         }, 1000);
     });
     document.getElementById('day').addEventListener('change', e => { dayType = e.target.value; recompute(); });
+    document.getElementById('timeStat').addEventListener('change', e => { timeStat = e.target.value; recompute(); });
 
     // スマホ: 「設定」で操作バーの残りの項目、「凡例」で凡例を開く（地図の高さが変わるので描き直す）
     const toggleOpen = (btn, el) => btn.addEventListener('click', () => {
@@ -1369,6 +1396,7 @@ function readShareState() {
         landmarkPanel: p.get('lp') === '1',
         departTime: /^\d{4}$/.test(p.get('dt') || '') ? parseClock(`${p.get('dt').slice(0, 2)}:${p.get('dt').slice(2)}`) : null,
         day: p.get('day') === 'holiday' ? 'holiday' : 'weekday',
+        timeStat: ['min', 'max'].includes(p.get('st')) ? p.get('st') : 'median',
     };
 }
 
@@ -1387,6 +1415,7 @@ function writeShareState() {
     if (!document.getElementById('landmarkPanel').hidden) p.set('lp', '1');
     if (departTime != null) p.set('dt', fmtClock(departTime).padStart(5, '0').replace(':', ''));
     if (dayType === 'holiday') p.set('day', 'holiday');
+    if (timeStat !== 'median') p.set('st', timeStat);
     const t = d3.zoomTransform(svg.node());
     if (t.k !== 1 || t.x || t.y) p.set('z', [+t.k.toFixed(3), Math.round(t.x), Math.round(t.y)].join(','));
     history.replaceState(null, '', '#' + p.toString());
@@ -1415,6 +1444,8 @@ function init() {
     if (share.ranking) rankingCollapsed = share.ranking === 'closed';
     dayType = share.day;
     departTime = share.departTime;
+    timeStat = share.timeStat;
+    document.getElementById('timeStat').value = timeStat;
     document.querySelector(`input[name="day"][value="${dayType}"]`).checked = true;
     document.getElementById('departTime').value = departTime != null ? fmtClock(departTime).padStart(5, '0') : '';
     updateDepartLabel();

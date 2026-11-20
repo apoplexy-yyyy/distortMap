@@ -174,7 +174,8 @@ button:hover {
 /* 狭い画面: 凡例は地図の幅いっぱいにして、出典表示の上に置く */
 /* 出発時刻・平日/土休日 */
 .depart-group input[type="time"] { padding: 2px 4px; font-size: 13px; }
-.depart-hint { color: #888; font-size: 11px; }
+.time-stat { font-size: 11px; color: #555; padding: 1px 2px; }
+.time-stat[hidden] { display: none; }
 button.clear-btn { padding: 1px 7px; background: #868e96; }
 button.clear-btn:hover { background: #5c636a; }
 button.play-btn { padding: 1px 8px; min-width: 28px; }
