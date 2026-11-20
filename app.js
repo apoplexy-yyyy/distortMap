@@ -95,7 +95,8 @@ let svg, rootLayer, ringLayer, linkSel, nodeSel, labelSel;
 let landmarks = [];         // 表示中のランドマーク（landmarks.js の LandmarkStore.visibleItems() に位置・近い駅を足したもの）
 let landmarkSel, landmarkLabelSel;
 let busStops = [];          // バスの停留所 { id: ノード名, uid, name, lat, lng, routes[], label, color, isBus }
-let busSel;
+let busLinks = [];          // バスの停留所どうしの線（同じ系統で隣り合う停留所）{ s, t, label, color }
+let busSel, busHitSel, busLinkSel;
 let zoomBehavior = null;    // d3.zoom（共有 URL の拡大・移動を戻すときに使う）
 let shareReady = false;     // 共有 URL から表示を戻し終わるまでは URL を書き換えない
 let view3dReady = false;    // 3D 表示が使えるか
@@ -254,9 +255,16 @@ function earliestArrivals(srcNodes, t0) {
         });
     };
     srcNodes.forEach(n => reach(n, t0, { src: true }));   // 中心駅から徒歩連絡の駅へ歩いて乗ることもある
-    for (const c of network.conns[dayType]) {
-        if (c.dep < t0) continue;
-        if (c.dep > t0 + 240) break;   // 4 時間より先は使わない（区間は発車順）
+    // 区間は発車順なので、t0 に発車する最初の区間を二分探索で探してそこから見る
+    const conns = network.conns[dayType];
+    let lo = 0, hi = conns.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (conns[mid].dep < t0) lo = mid + 1; else hi = mid;
+    }
+    for (let k = lo; k < conns.length; k++) {
+        const c = conns[k];
+        if (c.dep > t0 + 240) break;   // 4 時間より先は使わない
         const onTrip = boarded.has(c.trip);
         if (onTrip || arr[c.from] <= c.dep) {
             if (!onTrip) boarded.set(c.trip, c);
@@ -575,7 +583,8 @@ function initSvg() {
     svg.call(zoomBehavior);
     ringLayer = rootLayer.append('g').attr('class', 'rings');
     rootLayer.append('g').attr('class', 'links');
-    rootLayer.append('g').attr('class', 'bus-stops');   // バス停は駅の下
+    rootLayer.append('g').attr('class', 'bus-links');   // バスの線・停留所は駅の下
+    rootLayer.append('g').attr('class', 'bus-stops');
     rootLayer.append('g').attr('class', 'nodes');
     rootLayer.append('g').attr('class', 'landmarks');        // ランドマークは駅の上（駅の丸に隠れないように）
     rootLayer.append('g').attr('class', 'landmark-labels');
@@ -600,11 +609,17 @@ function render() {
         .on('mouseout', hideTooltip)
         .on('click', (e, d) => tapOrSelect(e, d, showTooltip, selectCenter));
 
-    busSel = rootLayer.select('.bus-stops').selectAll('circle').data(busStops, d => d.uid).join('circle')
-        .attr('class', 'bus-stop')
-        .on('mouseover', showBusTooltip)
+    busLinkSel = rootLayer.select('.bus-links').selectAll('line').data(busLinks).join('line')
+        .attr('class', 'bus-link')
+        .attr('stroke', d => d.color);
+    // 停留所の丸は小さいので、見えない大きめの丸でマウス・タップを受ける
+    busSel = rootLayer.select('.bus-stops').selectAll('circle.bus-stop').data(busStops, d => d.uid).join('circle')
+        .attr('class', 'bus-stop');
+    busHitSel = rootLayer.select('.bus-stops').selectAll('circle.bus-hit').data(busStops, d => d.uid).join('circle')
+        .attr('class', 'bus-hit')
+        .on('mouseover', (e, d) => { busSel.classed('hl', x => x === d); showBusTooltip(e, d); })
         .on('mousemove', moveTooltip)
-        .on('mouseout', hideTooltip)
+        .on('mouseout', () => { busSel.classed('hl', false); hideTooltip(); })
         .on('click', (e, d) => tapOrSelect(e, d, showBusTooltip, () => {}));
 
     labelSel = rootLayer.select('.labels').selectAll('text').data(stations, d => d.id).join('text')
@@ -655,9 +670,13 @@ function updateLayout(animate = true, duration = 600) {
         .classed('center', d => d.id === centerId);
     applyZoomScale();
     tr(nodeSel).attr('cx', X).attr('cy', Y);
-    busSel.style('display', d => (hiddenLines.has(d.label) ? 'none' : null))
-        .attr('fill', d => (d.missing ? '#bbb' : d.color));
+    const busShown = d => (hiddenLines.has(d.label) ? 'none' : null);
+    busSel.style('display', busShown).attr('fill', d => (d.missing ? '#bbb' : d.color));
+    busHitSel.style('display', busShown);
+    busLinkSel.style('display', busShown);
     tr(busSel).attr('cx', X).attr('cy', Y);
+    tr(busHitSel).attr('cx', X).attr('cy', Y);
+    tr(busLinkSel).attr('x1', d => X(d.s)).attr('y1', d => Y(d.s)).attr('x2', d => X(d.t)).attr('y2', d => Y(d.t));
 
     stations.forEach(s => { s.fx = X(s); s.fy = Y(s); });   // アニメーション後の位置
     const warp = buildWarp(cx, cy, scale);
@@ -722,7 +741,11 @@ function applyZoomScale() {
     if (!nodeSel) return;
     nodeSel.attr('r', d => nodeRadius(d) * zoomScale).attr('stroke-width', 1.5 * zoomScale);
     linkSel.attr('stroke-width', 3 * zoomScale);
-    if (busSel) busSel.attr('r', 2.2 * zoomScale);
+    if (busSel) {
+        busSel.attr('r', 2.2 * zoomScale);
+        busHitSel.attr('r', 7 * zoomScale);
+        busLinkSel.attr('stroke-width', 0.8 * zoomScale);
+    }
     if (landmarkSel) landmarkSel.select('g.pin').attr('transform', `scale(${zoomScale})`);
 }
 
@@ -1260,7 +1283,7 @@ function setupControls() {
     toggleOpen(document.getElementById('legendBtn'), document.getElementById('legend'));
     // 地図の何もないところをタップしたら、出していた情報を消す
     svg.on('click.tooltip', e => {
-        if (!e.target.closest('.station, .station-label, .bus-stop, .landmark, .landmark-label')) { tapPreview = null; hideTooltip(); }
+        if (!e.target.closest('.station, .station-label, .bus-hit, .landmark, .landmark-label')) { tapPreview = null; hideTooltip(); }
     });
     // 共有 URL を同じタブに貼って開き直したときは、その表示にする
     window.addEventListener('hashchange', () => location.reload());
@@ -1384,6 +1407,15 @@ function init() {
             routes: [...routesAt[i]].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true })),
         }));
     });
+    // 同じ系統で隣り合う停留所を細い線で結ぶ（同じ 2 つの停留所の線は 1 本）
+    const stopByUid = Object.fromEntries(busStops.map(b => [b.uid, b]));
+    const linkSeen = new Set();
+    busLinks = BUS_SOURCES.flatMap(src => src.data.patterns.flatMap(p => p.stops.slice(1).map((s, j) => {
+        const a = p.stops[j], key = src.key + '|' + Math.min(a, s) + '|' + Math.max(a, s);
+        if (a === s || linkSeen.has(key)) return null;
+        linkSeen.add(key);
+        return { s: stopByUid[src.key + '|' + a], t: stopByUid[src.key + '|' + s], label: src.label, color: src.color };
+    }).filter(Boolean)));
     centerId = (stations.find(s => s.name === share.center) || stations.find(s => s.name === DEFAULT_CENTER_NAME) || stations[0]).id;
     populateCenterSelect();
     render();
