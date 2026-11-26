@@ -27,3 +27,6 @@ jr_wiki/
 # ただし乗換案内の検索結果（scrape.js の旧機能。アプリでは使っていない）と、その解析用のページは入れない
 data/routes.js
 data/debug/
+
+# OpenStreetMap から取得した途中の結果（build_osm_estimate.js が作り直せる）
+osm_rail/

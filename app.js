@@ -18,6 +18,11 @@
 // =====================================================================
 
 // --- 1. 設定 ---------------------------------------------------------
+
+// 時刻表データの代わりに、OpenStreetMap の路線から推定した時刻表（data/osm_estimate.js）を使うか。
+// URL の #…&src=osm で切り替える（操作バーの「データ」）。推定のときは神奈川県全域の鉄道だけで、バス・運賃は無い
+const ESTIMATE = new URLSearchParams(location.hash.slice(1)).get('src') === 'osm' && !!window.OSM_EST;
+if (ESTIMATE) window.NETWORK = window.OSM_EST.network;
 const DEFAULT_CENTER_NAME = '金沢八景';
 
 // 所要時間は平日 10〜15 時台に中心駅を出る列車で計算する。
@@ -149,7 +154,7 @@ const BUS_SOURCES = [
     { key: 'bus', label: '市営バス', color: '#2b8a3e', data: window.YOKOHAMA_BUS },
     // 京急バスは時刻表のオープンデータが無いので、国土数値情報の系統・運行本数から推定した時刻（build_keikyu_bus.py）
     { key: 'kbus', label: '京急バス（推定）', color: '#e8590c', data: window.KEIKYU_BUS },
-].filter(b => b.data);
+].filter(b => b.data && !ESTIMATE);
 BUS_SOURCES.forEach(b => {
     const count = {};
     b.data.stops.forEach(s => (count[s[0]] = (count[s[0]] || 0) + 1));
@@ -166,7 +171,7 @@ function busTrains(data, day) {
 }
 
 // 事業者ごとの駅は「事業者|駅名」のノードとして扱い、同じ駅名どうしは乗換でつなぐ
-const OPERATORS = [
+const OPERATORS = (ESTIMATE ? estimateOperators() : [
     { key: 'keikyu', label: '京急', data: window.KEIKYU, dwell: DWELL_MIN },
     // GTFS は到着時刻が正確なので、発車＝到着として扱う
     { key: 'yokohama', label: '横浜市営地下鉄', data: window.YOKOHAMA, dwell: 0 },
@@ -179,7 +184,14 @@ const OPERATORS = [
     // バスは均一運賃で、乗るたびに払う
     ...BUS_SOURCES.map(b => ({ key: b.key, label: b.label, kind: 'bus', dwell: 0, flatFare: b.data.fare,
         data: { stations: b.nodeNames, trains: busTrains(b.data, 'weekday'), trainsHoliday: busTrains(b.data, 'holiday') } })),
-].filter(op => op && op.data);
+]).filter(op => op && op.data);
+// 推定の時刻表（OSM の路線ごと。運賃は無い）
+function estimateOperators() {
+    return Object.entries(window.OSM_EST.lines).map(([line, l]) => ({
+        key: 'osm-' + line, label: line, dwell: 0,
+        data: { stations: l.stations, trains: l.trains, trainsHoliday: l.trains, fares: {} },
+    }));
+}
 // 運賃を通しで数える事業者どうしか（JR の路線どうし、東急の路線どうし。バスは 1 回ごと）
 const sameFare = (a, b) => a.flatFare == null && (a.fareGroup || a.key) === (b.fareGroup || b.key);
 
@@ -462,6 +474,7 @@ function fareOf(op, a, b) {
 // 時刻表のない区間用: 中心駅から各駅への最も安い運賃（乗換は何回でも）。
 // 「ある事業者に乗る駅」→「降りる駅」を 1 回の乗車（その区間の運賃）とし、乗換・徒歩連絡は 0 円でつなぐ
 function cheapestFares(fromName) {
+    if (ESTIMATE) return {};   // 推定のときは運賃が無い
     const N = network.nodes.length;
     const board = new Array(N).fill(Infinity), alight = new Array(N).fill(Infinity);
     const boardPrev = new Array(N).fill(null), alightPrev = new Array(N).fill(null);
@@ -573,6 +586,11 @@ function describeData(cid) {
     const total = stations.length - 1;
     const values = stations.filter(s => s.id !== cid).map(s => routeData[cid][s.id]);
     const withTime = values.filter(v => v && v.time != null).length;
+    if (ESTIMATE) {
+        return setStatus(`推定（OpenStreetMap の路線から。駅間の距離・路線の種類から所要時間を、運転間隔は目安で計算）` +
+            `: ${center.name}${timeBasis()} から 時間 ${withTime} / ${total} 駅` +
+            (withTime === total ? '' : '。行けない駅は実際の位置に灰色で表示'), 'ok');
+    }
     const withFare = values.filter(v => v && v.fare != null).length;
     if (!OPERATORS.length) return setStatus('時刻表・運賃のデータがありません（build_keikyu.py / build_yokohama.py を実行）', 'error');
     const noTimetable = OPERATORS.filter(op => !op.data.trains.length).map(op => op.label);
@@ -1339,6 +1357,29 @@ function setupControls() {
         updateLayout(true);
     });
 
+    // データ：時刻表 ⇔ 推定（OSM）。URL の src を書き換えて開き直す（路線網ごと入れ替わるため）
+    const srcGroup = document.getElementById('dataSrc');
+    if (srcGroup) {
+        srcGroup.querySelector(`input[value="${ESTIMATE ? 'osm' : 'timetable'}"]`).checked = true;
+        if (!window.OSM_EST) srcGroup.querySelector('input[value="osm"]').disabled = true;
+        srcGroup.addEventListener('change', e => {
+            writeShareState();
+            const p = new URLSearchParams(location.hash.slice(1));
+            if (e.target.value === 'osm') p.set('src', 'osm');
+            else p.delete('src');
+            location.hash = p.toString();   // hashchange で開き直す
+        });
+    }
+    // 推定には運賃が無いので、運賃地図は選べない
+    if (ESTIMATE) {
+        const cost = modeGroup.querySelector('input[value="cost"]');
+        cost.disabled = true;
+        if (cost.checked) {
+            modeGroup.querySelector('input[value="time"]').checked = true;
+            currentMode = 'time';
+        }
+    }
+
     slider.addEventListener('input', e => {
         distortionStrength = e.target.value / 100;
         sliderValue.textContent = e.target.value + '%';
@@ -1441,6 +1482,7 @@ function setupControls() {
 //   lr=open|closed（近いランドマークの表の開閉。無ければパソコンは開く・スマホは閉じる）  lp=1（ランドマークの設定パネルを開く）
 //   dt=HHMM（出発時刻。無ければ日中の値）  day=holiday（土休日ダイヤ。無ければ平日）
 //   st=median|max（出発時刻が無いときの日中の平均・最大。無ければ最小）
+//   src=osm（時刻表の代わりに OSM の路線から推定した時刻表を使う。無ければ時刻表）
 function readShareState() {
     const p = new URLSearchParams(location.hash.slice(1));
     const num = (k, lo, hi) => (p.has(k) && isFinite(+p.get(k)) ? Math.min(hi, Math.max(lo, +p.get(k))) : null);
@@ -1479,6 +1521,7 @@ function writeShareState() {
     if (departTime != null) p.set('dt', fmtClock(departTime).padStart(5, '0').replace(':', ''));
     if (dayType === 'holiday') p.set('day', 'holiday');
     if (timeStat !== 'min') p.set('st', timeStat);
+    if (ESTIMATE) p.set('src', 'osm');
     const t = d3.zoomTransform(svg.node());
     if (t.k !== 1 || t.x || t.y) p.set('z', [+t.k.toFixed(3), Math.round(t.x), Math.round(t.y)].join(','));
     history.replaceState(null, '', '#' + p.toString());
