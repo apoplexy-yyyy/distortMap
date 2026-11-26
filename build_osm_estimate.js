@@ -26,7 +26,7 @@ const BBOX = { s: 35.12, w: 138.9, n: 35.68, e: 139.8 };
 
 // 路線の種類ごとの目安：巡航速度（km/h）、1駅あたりの停車・加減速（分）、運転間隔（分）
 const KIND = {
-    train: { speed: 75, stop: 0.5, interval: 10 },   // 停車 0.5 分・速い列車 90km/h が時刻表データと最も合った（平均の差 4.3 分）
+    train: { speed: 75, stop: 0.5, interval: 10 },   // 停車 0.5 分・速い列車 75km/h が時刻表データと最も合った（平均の差 3.2 分）
     subway: { speed: 55, stop: 0.7, interval: 6 },
     light_rail: { speed: 40, stop: 0.6, interval: 8 },
     monorail: { speed: 45, stop: 0.6, interval: 8 },
@@ -35,7 +35,7 @@ const KIND = {
 // 調整用: EST_KIND='{"train":{"speed":80}}' のように上書きできる
 if (process.env.EST_KIND) for (const [k, v] of Object.entries(JSON.parse(process.env.EST_KIND))) Object.assign(KIND[k], v);
 // 足す速い列車（停車駅を減らした列車）: 元の路線の停車駅がこれ以上のときに足す・巡航速度・運転間隔（分）
-const EXPRESS = { minStops: 12, speed: 90, interval: 15, ...(process.env.EST_EXPRESS ? JSON.parse(process.env.EST_EXPRESS) : {}) };
+const EXPRESS = { minStops: 12, speed: 75, interval: 15, ...(process.env.EST_EXPRESS ? JSON.parse(process.env.EST_EXPRESS) : {}) };
 // 列車の種別・愛称の relation の名前を、凡例で分かりやすい路線の名前にまとめる（同じ名前の路線どうしは乗換なしで乗り継げる）
 const LINE_ALIAS = [
     // 京急は本線・支線・快特などを 1 つの路線にまとめる（時刻表データの京急と同じく、乗り換えずに乗り継げる）
@@ -48,6 +48,18 @@ const LINE_ALIAS = [
     [/^JR中央線JC$/, 'JR中央線'],
     [/^横浜高速鉄道みなとみらい21線$/, 'みなとみらい線'],
 ];
+// 路線をまたぐ直通運転: [路線, 路線, つなぐ駅]
+const THROUGH = [
+    ['相鉄新横浜線', '相鉄本線', '西谷'],
+    ['東急新横浜線', '東急東横線', '日吉'],
+    ['東急新横浜線', '東急目黒線', '日吉'],
+    ['相鉄新横浜線', '東急新横浜線', '新横浜'],
+    ['みなとみらい線', '東急東横線', '横浜'],
+];
+// 線を描かない路線（所要時間の計算には使う）
+const HIDDEN_LINES = /新幹線/;
+// 直通運転の列車の運転間隔（分）。実際は今ある列車の一部が直通するので、本数を増やしすぎないように少なめにする
+const THROUGH_INTERVAL = 30;
 // 県内の判定に使うバス停留所（国土数値情報 P11・神奈川県）
 const KANAGAWA_STOPS = path.join(__dirname, 'ksj', 'P11-22_14_SHP');
 const DAY_START = 6 * 60, DAY_END = 20 * 60;
@@ -338,6 +350,41 @@ function build(raw) {
         }
     }
 
+    // 直通運転: 駅 J で、列車 p（J まで）と J から出る列車 q をつないだ列車を足す（乗り換えずに乗り継げる）。
+    //   ・同じ路線の分岐駅: 京急の本線と久里浜線（堀ノ内）など。OSM では別の relation になっている
+    //   ・路線をまたぐもの（THROUGH）: 相鉄新横浜線と相鉄本線（西谷）など
+    // 足した列車（through）は所要時間の計算だけに使い、線は描かない
+    const joinAt = (A, P, Q, J) => {
+        const out = [];
+        for (const p of P) {
+            const i = p.stops.indexOf(J);
+            if (i <= 0) continue;
+            for (const q of Q) {
+                if (q === p || q.stops[0] !== J || q.stops.length < 2) continue;
+                const head = p.stops.slice(0, i + 1), tail = q.stops.slice(1);
+                if (tail.some(s => head.includes(s))) continue;                       // 来た方へ折り返す
+                if (tail.every(s => p.stops.slice(i + 1).includes(s))) continue;      // p がそのまま走る区間
+                const t0 = p.times[i] - q.times[0];
+                out.push({ stops: [...head, ...tail], times: [...p.times.slice(0, i + 1), ...q.times.slice(1).map(t => t + t0)],
+                    interval: THROUGH_INTERVAL, express: p.express, through: true });
+            }
+        }
+        // 同じ並びの列車は 1 つだけ（本数を水増ししない）
+        const have = new Set(A.patterns.map(p => p.stops.join("|")));
+        for (const o of out) { const k = o.stops.join("|"); if (!have.has(k)) { have.add(k); A.patterns.push(o); } }
+    };
+    for (const L of Object.values(lines)) {
+        const starts = new Set(L.patterns.map(q => q.stops[0]));
+        for (const J of starts)
+            if (L.patterns.some(p => p.stops.indexOf(J) > 0 && p.stops.indexOf(J) < p.stops.length - 1)) joinAt(L, [...L.patterns], [...L.patterns], J);
+    }
+    for (const [a, b, J] of THROUGH) {
+        if (!lines[a] || !lines[b]) { console.warn('直通運転の路線が見つかりません:', a, b); continue; }
+        const A = [...lines[a].patterns], B = [...lines[b].patterns];   // つないだ列車もさらにつなぐ（相鉄本線〜西谷〜新横浜〜新綱島）
+        joinAt(lines[a], A, B, J);   // a から b へ
+        joinAt(lines[a], B, A, J);   // b から a へ（a の列車として持つ）
+    }
+
     // 時刻表（distortMap の形：trains = [[種別, [駅番号, 発車分, 駅番号, 発車分, …]], …]）
     const outLines = {};
     for (const [name, L] of Object.entries(lines)) {
@@ -363,12 +410,12 @@ function build(raw) {
     // 東海道線の横浜〜川崎のように並行する各駅停車の路線（京浜東北線）がある区間も、そちらの線で描く
     const skip = new Set();
     for (const L of Object.values(lines))
-        for (const p of L.patterns) p.stops.forEach((x, i) => p.stops.slice(i + 2).forEach(y => { if (y !== x) skip.add([x, y].sort().join('|')); }));
+        for (const p of L.patterns) if (!p.through) p.stops.forEach((x, i) => p.stops.slice(i + 2).forEach(y => { if (y !== x) skip.add([x, y].sort().join('|')); }));
     const edgeSeen = new Set();
     const edges = [];
     const dropped = [];
     for (const [name, L] of Object.entries(lines))
-        for (const p of L.patterns)
+        for (const p of L.patterns.filter(p => !p.through && !HIDDEN_LINES.test(name)))
             for (let i = 1; i < p.stops.length; i++) {
                 const pair = [p.stops[i - 1], p.stops[i]].sort().join('|');
                 const a = sid[p.stops[i - 1]], b = sid[p.stops[i]];
