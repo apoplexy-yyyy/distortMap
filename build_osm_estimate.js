@@ -38,7 +38,8 @@ if (process.env.EST_KIND) for (const [k, v] of Object.entries(JSON.parse(process
 const EXPRESS = { minStops: 12, speed: 90, interval: 15, ...(process.env.EST_EXPRESS ? JSON.parse(process.env.EST_EXPRESS) : {}) };
 // 列車の種別・愛称の relation の名前を、凡例で分かりやすい路線の名前にまとめる（同じ名前の路線どうしは乗換なしで乗り継げる）
 const LINE_ALIAS = [
-    [/エアポート快特|京急空港線.*急行|都営浅草線快特/, '京急（快特・急行）'],
+    // 京急は本線・支線・快特などを 1 つの路線にまとめる（時刻表データの京急と同じく、乗り換えずに乗り継げる）
+    [/エアポート快特|京急空港線.*急行|都営浅草線快特|^京浜急行電鉄|^京急/, '京急線'],
     [/^(えのしま|さがみ|はこね|スーパーはこね)$|小田急.*(通勤|準急|急行)/, '小田急（急行・特急）'],
     [/小田急電鉄各駅停車|小田急小田原線・江ノ島線/, '小田急小田原線'],
     [/^(のぞみ|こだま|ひかり)$/, '東海道新幹線'],
@@ -311,11 +312,23 @@ function build(raw) {
     const LOCAL_ONLY = /根岸線|京浜東北|鶴見線|相模線|御殿場線|江ノ島電鉄|こどもの国線|大雄山線|箱根登山|多摩川線|池上線|世田谷線|南武支線|大師線|逗子線|多摩線/;
     for (const [name, L] of Object.entries(lines)) {
         if (L.kind !== 'train' || EXPRESS.speed <= 0 || LOCAL_ONLY.test(name)) continue;
-        const counts = L.patterns.map(p => p.stops.length);
-        if (Math.max(...counts) < EXPRESS.minStops || Math.min(...counts) < Math.max(...counts) * 0.75) continue;   // 停車駅の少ない relation がもうある
+        // 停車駅の多い列車ごとに、その列車の停車駅だけを通る停車駅の少ない列車（急行など）が OSM にまだ無ければ足す
+        // 駅名 -> この路線で隣になる駅（どれかの列車で間に駅がある組は、急行が飛ばしているので数えない）
+        const far = new Set();
+        for (const q of L.patterns) q.stops.forEach((x, i) => q.stops.slice(i + 2).forEach(y => far.add(x + '|' + y).add(y + '|' + x)));
+        const nb = {};
+        for (const q of L.patterns) q.stops.forEach((x, i) => [q.stops[i - 1], q.stops[i + 1]].forEach(y => y && !far.has(x + '|' + y) && (nb[x] = nb[x] || new Set()).add(y)));
+
         for (const p of [...L.patterns]) {
             if (p.stops.length < EXPRESS.minStops) continue;
-            const keep = p.pts.filter((s, i) => i === 0 || i === p.pts.length - 1 || stationPos[s.name].lines.size >= 2);
+            // 路線の 6 割以上を通る列車だけを数える（「矢向〜川崎」のような短い区間の列車は急行ではない）
+            const covers = q => {
+                const idx = q.stops.map(s => p.stops.indexOf(s));
+                return idx.every(i => i >= 0) && Math.abs(idx[idx.length - 1] - idx[0]) >= p.stops.length * 0.6;
+            };
+            if (L.patterns.some(q => q !== p && !q.express && q.stops.length >= 3 && q.stops.length <= p.stops.length * 0.75 && covers(q))) continue;
+            // 止まる駅: 始発・終点、乗換駅（2つ以上の路線が止まる駅）、同じ路線の分岐駅（隣の駅が 3 つ以上）
+            const keep = p.pts.filter((s, i) => i === 0 || i === p.pts.length - 1 || stationPos[s.name].lines.size >= 2 || (nb[s.name]?.size || 0) >= 3);
             if (keep.length < 3 || keep.length > p.stops.length * 0.7) continue;
             const t = runTimes(keep, EXPRESS.speed, KIND.train.stop);
             // 普通列車より遅くならないように
