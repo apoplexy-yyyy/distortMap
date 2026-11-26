@@ -141,6 +141,62 @@ const runTimes = (list, speed, stop) => {
     for (let i = 1; i < list.length; i++) t.push(t[i - 1] + (km(list[i - 1], list[i]) * 1.15 / speed) * 60 + stop);
     return t;
 };
+// OSM の停車駅の並びが崩れている relation を直す（相模線・東海道線などで、並びがばらばらだったり、
+// 別の路線の駅が末尾に付いていたりする）。1 区間だけ極端に長い（区間の中央値の 4 倍かつ 3km 以上）並びが対象:
+//   1. 同じ駅を 1 回にし、端の駅（全体の重心から最も遠い駅）から近い順につなぎ直す（向きは元の始発に近い方から）
+//   2. それでも前後の区間が極端に長い駅（飛び離れた駅）は除く
+function fixOrder(stops) {
+    const longHop = list => {
+        const hops = list.slice(1).map((s, i) => km(list[i], s));
+        const med = [...hops].sort((a, b) => a - b)[Math.floor(hops.length / 2)] || 0;
+        const lim = Math.max(3, med * 4);
+        return { hops, lim, bad: hops.some(h => h > lim) };
+    };
+    // 同じ駅が 2 回あれば最初の 1 回だけにする（いずみ野線の末尾に「星川」がもう一度ある、など）
+    const uniq = [...new Map(stops.map(s => [s.name, s])).values()];
+    // 端の駅が途中の駅の間に入る方が道のりが短ければ、そこへ移す（池上線の末尾に「戸越銀座」がある、など）
+    // 末尾に紛れた駅が続くこともある（大井町線の「…大井町 中延 大岡山」）ので、動かなくなるまで繰り返す
+    for (let n = 0, moved = true; moved && n < 6; n++) for (const end of [0, 1]) {
+        if (uniq.length < 4) break;
+        if (end === 0) moved = false;
+        const i = end ? uniq.length - 1 : 0;
+        const t = uniq[i], hop = km(t, uniq[end ? i - 1 : 1]);
+        const rest = uniq.filter((_, j) => j !== i);
+        let best = -1, cost = hop * 0.5;
+        for (let j = 1; j < rest.length; j++) {
+            const c = km(rest[j - 1], t) + km(t, rest[j]) - km(rest[j - 1], rest[j]);
+            if (c < cost) { cost = c; best = j; }
+        }
+        if (best > 0) { rest.splice(best, 0, t); uniq.splice(0, uniq.length, ...rest); moved = true; }
+    }
+    if (uniq.length < 3 || !longHop(uniq).bad) return uniq;
+    const c = { lat: uniq.reduce((a, s) => a + s.lat, 0) / uniq.length, lng: uniq.reduce((a, s) => a + s.lng, 0) / uniq.length };
+    let cur = uniq.reduce((a, s) => (km(s, c) > km(a, c) ? s : a));
+    const rest = new Set(uniq);
+    const out = [];
+    while (rest.size) {
+        rest.delete(cur);
+        out.push(cur);
+        let next = null;
+        for (const s of rest) if (!next || km(cur, s) < km(cur, next)) next = s;
+        cur = next;
+        if (!cur) break;
+    }
+    if (km(out[0], stops[0]) > km(out[out.length - 1], stops[0])) out.reverse();
+    // 飛び離れた駅を除く（端なら外側の区間、途中なら前後の区間がどちらも長い駅）
+    let list = out;
+    for (let pass = 0; pass < 3; pass++) {
+        const { hops, lim, bad } = longHop(list);
+        if (!bad) break;
+        list = list.filter((s, i) => {
+            const before = i > 0 ? hops[i - 1] : null, after = i < hops.length ? hops[i] : null;
+            if (before == null) return after <= lim;
+            if (after == null) return before <= lim;
+            return !(before > lim && after > lim);
+        });
+    }
+    return list;
+}
 const inBox = p => p.lat >= BBOX.s && p.lat <= BBOX.n && p.lng >= BBOX.w && p.lng <= BBOX.e;
 
 function build(raw) {
@@ -188,7 +244,7 @@ function build(raw) {
         const name = lineName(r);
         if (!name || isThrough(r)) continue;
         const kind = KIND[r.tags.route] ? r.tags.route : 'train';
-        const stops = [];
+        let stops = [];
         for (const mem of r.members) {
             if (mem.type !== 'node' || !/^(stop|stop_entry_only|stop_exit_only|platform|platform_entry_only|platform_exit_only)$/.test(mem.role)) continue;
             const n = nodes.get(mem.ref);
@@ -201,6 +257,7 @@ function build(raw) {
             if (stops.length && stops[stops.length - 1].name === nm) continue;   // 停車位置とホームが両方ある
             stops.push({ name: nm, ...(st ? { lat: st.lat, lng: st.lon } : p) });
         }
+        stops = fixOrder(stops);
         // 枠の外の駅は落とす（県外の遠い区間）。県内に駅が無い路線は使わない
         const seq = stops.filter(inBox);
         if (seq.length < 2 || !seq.some(inKanagawa)) continue;
@@ -276,18 +333,54 @@ function build(raw) {
         const o = stationPos[n];
         return { id: sid[n], name: n, lat: +(o.lat / o.n).toFixed(6), lng: +(o.lng / o.n).toFixed(6), lines: [...o.lines] };
     });
+    // 線は各駅停車の区間だけ描く: どれかの列車で間に駅がある 2 駅（急行・特急が駅を飛ばす区間）は結ばない。
+    // 東海道線の横浜〜川崎のように並行する各駅停車の路線（京浜東北線）がある区間も、そちらの線で描く
+    const skip = new Set();
+    for (const L of Object.values(lines))
+        for (const p of L.patterns) p.stops.forEach((x, i) => p.stops.slice(i + 2).forEach(y => { if (y !== x) skip.add([x, y].sort().join('|')); }));
     const edgeSeen = new Set();
     const edges = [];
+    const dropped = [];
     for (const [name, L] of Object.entries(lines))
         for (const p of L.patterns)
             for (let i = 1; i < p.stops.length; i++) {
+                const pair = [p.stops[i - 1], p.stops[i]].sort().join('|');
                 const a = sid[p.stops[i - 1]], b = sid[p.stops[i]];
-                const key = [name, ...[a, b].sort()].join('|');
+                const key = name + '|' + pair;
                 if (a === b || edgeSeen.has(key)) continue;
                 edgeSeen.add(key);
-                edges.push({ source: a, target: b, line: name });
+                (skip.has(pair) ? dropped : edges).push({ source: a, target: b, line: name });
             }
-    return { network: { generatedAt: new Date().toISOString(), source: 'OpenStreetMap（推定）', lines: Object.keys(outLines), stations, edges }, lines: outLines };
+    // 同じ 2 駅の間は 1 本だけ描く（快特・急行の路線が各駅停車と同じ区間に重ならないように）。
+    // 快特・急行・特急・直通などの種別の路線より普通の路線を、その中では区間の多い路線（本線）を残す
+    const SERVICE = /（|^特急|新幹線|湘南新宿|上野東京|直通線|成田エクスプレス/;   // 「京浜急行電鉄」は種別ではない
+    const lineSize = {};
+    edges.forEach(e => (lineSize[e.line] = (lineSize[e.line] || 0) + 1));
+    for (const n in lineSize) if (SERVICE.test(n)) lineSize[n] -= 10000;
+    const byPair = new Map();
+    for (const e of edges) {
+        const pair = [e.source, e.target].sort().join('|');
+        const cur = byPair.get(pair);
+        if (!cur || lineSize[e.line] > lineSize[cur.line]) byPair.set(pair, e);
+    }
+    edges.splice(0, edges.length, ...byPair.values());
+    // 結ばなかった 2 駅が、描く線でつながっていなければ知らせる（OSM の停車駅の並びの誤りなど）
+    const adj = {};
+    edges.forEach(e => { (adj[e.source] = adj[e.source] || []).push(e.target); (adj[e.target] = adj[e.target] || []).push(e.source); });
+    const linked = (a, b) => {
+        const seen = new Set([a]);
+        let front = [a];
+        for (let hop = 0; hop < 40 && front.length; hop++) {
+            front = front.flatMap(x => adj[x] || []).filter(y => !seen.has(y) && seen.add(y));
+            if (seen.has(b)) return true;
+        }
+        return false;
+    };
+    const idName = Object.fromEntries(stations.map(s => [s.id, s.name]));
+    const gaps = dropped.filter(e => !linked(e.source, e.target));
+    if (gaps.length) console.warn('描く線でつながらない区間:', gaps.map(e => `${e.line} ${idName[e.source]}-${idName[e.target]}`).join('、'));
+    const drawn = new Set(edges.map(e => e.line));
+    return { network: { generatedAt: new Date().toISOString(), source: 'OpenStreetMap（推定）', lines: Object.keys(outLines).filter(n => drawn.has(n)), stations, edges }, lines: outLines };
 }
 
 (async () => {
