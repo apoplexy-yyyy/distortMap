@@ -240,6 +240,17 @@ function build(raw) {
 
     const lines = {};      // 路線名 -> { kind, patterns: [{ stops:[名前], times:[分], interval }] }
     const stationPos = {};  // 駅名 -> { lat, lng, n }
+    // 同じ名前でも 3km 以上離れた駅は別の駅にする（御殿場線の足柄（静岡県）と小田急の足柄（小田原市）など）。
+    // 最初に見つかった駅はそのままの名前、離れた駅は「足柄（御殿場線）」のように路線名を付ける
+    const sameName = {};   // 駅名 -> [{ name, lat, lng }]
+    const distinctName = (nm, pos, line) => {
+        const list = (sameName[nm] = sameName[nm] || []);
+        const hit = list.find(s => km(s, pos) < 3);
+        if (hit) return hit.name;
+        const name = list.length ? `${nm}（${line}）` : nm;
+        list.push({ name, ...pos });
+        return name;
+    };
     for (const r of routes) {
         const name = lineName(r);
         if (!name || isThrough(r)) continue;
@@ -254,8 +265,10 @@ function build(raw) {
             const st = nearestStation(p);
             if (st) nm = normName(st.tags.name);   // 駅の名前にそろえる（停車位置の名前は「横浜（東海道線）」などまちまち）
             if (!nm) continue;
+            const pos = st ? { lat: st.lat, lng: st.lon } : p;
+            nm = distinctName(nm, pos, name);
             if (stops.length && stops[stops.length - 1].name === nm) continue;   // 停車位置とホームが両方ある
-            stops.push({ name: nm, ...(st ? { lat: st.lat, lng: st.lon } : p) });
+            stops.push({ name: nm, ...pos });
         }
         stops = fixOrder(stops);
         // 枠の外の駅は落とす（県外の遠い区間）。県内に駅が無い路線は使わない
