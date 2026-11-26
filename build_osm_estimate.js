@@ -9,11 +9,11 @@
 //         OSM に始発から終点までの所要時間（duration タグ）があれば、それに合うように全体を伸び縮みさせる
 //         列車は 6〜20 時に一定の間隔（OSM の interval タグ、無ければ路線の種類ごとの目安）で走るものとする
 //         急行・快速などの路線（停車駅の少ない relation）も OSM にあれば、そのまま速い列車として入る。
-//         停車駅の多い普通列車しか無い路線には、乗換駅（2路線以上）と終点だけに止まる速い列車を足す
+//         停車駅の多い普通列車しか無い路線には、乗降客数の多い駅・乗換駅・分岐駅・終点に止まる速い列車を足す（駅別乗降客数 S12）
 //   範囲: 神奈川県内に駅のある路線だけ（県内かどうかは、国土数値情報のバス停留所 P11 が 1km 以内にあるかで見る）
 //   出力: data/osm_estimate.js … window.OSM_EST = { network: { lines, stations, edges }, lines: { 路線名: { stations, trains } } }
 //         network は data/network.js と同じ形（駅の位置・路線のつながりの表示用）
-//   データ: © OpenStreetMap contributors（ODbL）
+//   データ: © OpenStreetMap contributors（ODbL）、国土数値情報（駅別乗降客数 S12・バス停留所 P11、CC BY 4.0）
 // =====================================================================
 const fs = require('fs');
 const path = require('path');
@@ -35,7 +35,8 @@ const KIND = {
 // 調整用: EST_KIND='{"train":{"speed":80}}' のように上書きできる
 if (process.env.EST_KIND) for (const [k, v] of Object.entries(JSON.parse(process.env.EST_KIND))) Object.assign(KIND[k], v);
 // 足す速い列車（停車駅を減らした列車）: 元の路線の停車駅がこれ以上のときに足す・巡航速度・運転間隔（分）
-const EXPRESS = { minStops: 12, speed: 75, interval: 15, ...(process.env.EST_EXPRESS ? JSON.parse(process.env.EST_EXPRESS) : {}) };
+// share: 乗降客数が路線の駅のうち上位この割合の駅に止まる。transfer: 乗換駅（2路線以上）にも必ず止まるか
+const EXPRESS = { minStops: 12, speed: 75, interval: 15, share: 0.4, transfer: true, ...(process.env.EST_EXPRESS ? JSON.parse(process.env.EST_EXPRESS) : {}) };
 // 列車の種別・愛称の relation の名前を、凡例で分かりやすい路線の名前にまとめる（同じ名前の路線どうしは乗換なしで乗り継げる）
 const LINE_ALIAS = [
     // 京急は本線・支線・快特などを 1 つの路線にまとめる（時刻表データの京急と同じく、乗り換えずに乗り継げる）
@@ -60,6 +61,8 @@ const THROUGH = [
 const HIDDEN_LINES = /新幹線/;
 // 直通運転の列車の運転間隔（分）。実際は今ある列車の一部が直通するので、本数を増やしすぎないように少なめにする
 const THROUGH_INTERVAL = 30;
+// 駅別乗降客数（国土数値情報 S12・2023 年度版、CC BY 4.0）。速い列車の停車駅を選ぶのに使う
+const RIDERSHIP = path.join(__dirname, 'ksj', 'S12-23', 'UTF-8', 'S12-23_NumberOfPassengers.geojson');
 // 県内の判定に使うバス停留所（国土数値情報 P11・神奈川県）
 const KANAGAWA_STOPS = path.join(__dirname, 'ksj', 'P11-22_14_SHP');
 const DAY_START = 6 * 60, DAY_END = 20 * 60;
@@ -147,6 +150,25 @@ function kanagawaTest() {
     };
 }
 // 「鶴ケ峰」「保土ケ谷」は時刻表データ・駅の一覧の「ヶ」にそろえる
+// 駅名と位置から乗降客数（同じ名前で 1.5km 以内の駅のうち最も多いもの。事業者ごとに分かれているため）
+function ridershipLookup() {
+    if (!fs.existsSync(RIDERSHIP)) { console.warn('駅別乗降客数が無いので、速い列車は乗換駅だけに止める:', RIDERSHIP); return () => null; }
+    const byName = {};
+    for (const f of JSON.parse(fs.readFileSync(RIDERSHIP, 'utf8')).features) {
+        const pr = f.properties;
+        // 年度ごとに 4 列ずつ並び、乗降客数は S12_009・013・…・053。新しい年度の値を使う
+        let n = null;
+        for (let k = 53; k >= 9 && n == null; k -= 4) n = pr['S12_0' + String(k).padStart(2, '0')] ?? null;
+        if (!n) continue;
+        const [lng, lat] = f.geometry.coordinates[0];
+        (byName[normName(pr.S12_001)] = byName[normName(pr.S12_001)] || []).push({ lat, lng, n });
+    }
+    return (name, pos) => {
+        let best = null;
+        for (const s of byName[name.replace(/（.*$/, '')] || []) if (km(s, pos) < 1.5 && (best == null || s.n > best)) best = s.n;
+        return best;
+    };
+}
 const normName = s => (s || '').replace(/(?<=[一-鿿])ケ(?=[一-鿿])/g, 'ヶ').replace(/\s+/g, '').replace(/駅$/, '').replace(/[（(].*?[）)]$/, '');
 // 駅の並びの、始発からの所要時間（分）: 直線距離 × 1.15 ÷ 巡航速度 ＋ 1駅ごとの停車・加減速
 const runTimes = (list, speed, stop) => {
@@ -250,6 +272,7 @@ function build(raw) {
     // 直通運転の relation（各路線の relation と重なる）は使わない
     const isThrough = r => /直通|東京地下鉄の|東京地下鉄-/.test([r.tags.name, r.tags['name:ja'], masterOf.get(r.id)?.tags?.name].join(' '));
     const inKanagawa = kanagawaTest();
+    const riders = ridershipLookup();
 
     const lines = {};      // 路線名 -> { kind, patterns: [{ stops:[名前], times:[分], interval }] }
     const stationPos = {};  // 駅名 -> { lat, lng, n }
@@ -340,8 +363,12 @@ function build(raw) {
             };
             if (L.patterns.some(q => q !== p && !q.express && q.stops.length >= 3 && q.stops.length <= p.stops.length * 0.75 && covers(q))) continue;
             // 止まる駅: 始発・終点、乗換駅（2つ以上の路線が止まる駅）、同じ路線の分岐駅（隣の駅が 3 つ以上）
-            const keep = p.pts.filter((s, i) => i === 0 || i === p.pts.length - 1 || stationPos[s.name].lines.size >= 2 || (nb[s.name]?.size || 0) >= 3);
-            if (keep.length < 3 || keep.length > p.stops.length * 0.7) continue;
+            //   ＋ 乗降客数が多い駅（この列車の駅のうち上位 EXPRESS.share）。乗降客数の分からない駅は数えない
+            const counts = p.pts.map(s => riders(s.name, s)).filter(n => n != null).sort((a, b) => b - a);
+            const cut = counts.length ? counts[Math.max(0, Math.ceil(counts.length * EXPRESS.share) - 1)] : Infinity;
+            const keep = p.pts.filter((s, i) => i === 0 || i === p.pts.length - 1 || (EXPRESS.transfer && stationPos[s.name].lines.size >= 2) ||
+                (nb[s.name]?.size || 0) >= 3 || (riders(s.name, s) ?? -1) >= cut);
+            if (keep.length < 3 || keep.length > p.stops.length * 0.8) continue;
             const t = runTimes(keep, EXPRESS.speed, KIND.train.stop);
             // 普通列車より遅くならないように
             const local = Object.fromEntries(p.stops.map((s, i) => [s, p.times[i]]));
@@ -461,7 +488,7 @@ function build(raw) {
 (async () => {
     const raw = process.argv.includes('--cached') && fs.existsSync(RAW) ? JSON.parse(fs.readFileSync(RAW, 'utf8')) : await fetchRaw();
     const out = build(raw);
-    fs.writeFileSync(OUT, `// ${new Date().toISOString()} に build_osm_estimate.js で生成（© OpenStreetMap contributors, ODbL）\nwindow.OSM_EST = ${JSON.stringify(out)};\n`);
+    fs.writeFileSync(OUT, `// ${new Date().toISOString()} に build_osm_estimate.js で生成（© OpenStreetMap contributors, ODbL／国土数値情報 駅別乗降客数 S12・バス停留所 P11, CC BY 4.0）\nwindow.OSM_EST = ${JSON.stringify(out)};\n`);
     const nTrains = Object.values(out.lines).reduce((a, l) => a + l.trains.length, 0);
     console.log(`路線 ${out.network.lines.length}・駅 ${out.network.stations.length}・区間 ${out.network.edges.length}・列車 ${nTrains} → ${OUT}（${(fs.statSync(OUT).size / 1024).toFixed(0)}KB）`);
     console.log(out.network.lines.join('、'));
