@@ -354,18 +354,20 @@ function build(raw) {
     //   ・同じ路線の分岐駅: 京急の本線と久里浜線（堀ノ内）など。OSM では別の relation になっている
     //   ・路線をまたぐもの（THROUGH）: 相鉄新横浜線と相鉄本線（西谷）など
     // 足した列車（through）は所要時間の計算だけに使い、線は描かない
-    const joinAt = (A, P, Q, J) => {
+    // midway: q が J を途中で通る列車でもよい（路線をまたぐ直通。相鉄本線の列車は横浜・海老名から出て西谷を通る）
+    const joinAt = (A, P, Q, J, midway = false) => {
         const out = [];
         for (const p of P) {
             const i = p.stops.indexOf(J);
             if (i <= 0) continue;
             for (const q of Q) {
-                if (q === p || q.stops[0] !== J || q.stops.length < 2) continue;
-                const head = p.stops.slice(0, i + 1), tail = q.stops.slice(1);
+                const j = q.stops.indexOf(J);
+                if (q === p || j < 0 || j === q.stops.length - 1 || (j > 0 && !midway)) continue;
+                const head = p.stops.slice(0, i + 1), tail = q.stops.slice(j + 1);
                 if (tail.some(s => head.includes(s))) continue;                       // 来た方へ折り返す
                 if (tail.every(s => p.stops.slice(i + 1).includes(s))) continue;      // p がそのまま走る区間
-                const t0 = p.times[i] - q.times[0];
-                out.push({ stops: [...head, ...tail], times: [...p.times.slice(0, i + 1), ...q.times.slice(1).map(t => t + t0)],
+                const t0 = p.times[i] - q.times[j];
+                out.push({ stops: [...head, ...tail], times: [...p.times.slice(0, i + 1), ...q.times.slice(j + 1).map(t => t + t0)],
                     interval: THROUGH_INTERVAL, express: p.express, through: true });
             }
         }
@@ -381,8 +383,8 @@ function build(raw) {
     for (const [a, b, J] of THROUGH) {
         if (!lines[a] || !lines[b]) { console.warn('直通運転の路線が見つかりません:', a, b); continue; }
         const A = [...lines[a].patterns], B = [...lines[b].patterns];   // つないだ列車もさらにつなぐ（相鉄本線〜西谷〜新横浜〜新綱島）
-        joinAt(lines[a], A, B, J);   // a から b へ
-        joinAt(lines[a], B, A, J);   // b から a へ（a の列車として持つ）
+        joinAt(lines[a], A, B, J, true);   // a から b へ
+        joinAt(lines[a], B, A, J, true);   // b から a へ（a の列車として持つ）
     }
 
     // 時刻表（distortMap の形：trains = [[種別, [駅番号, 発車分, 駅番号, 発車分, …]], …]）
