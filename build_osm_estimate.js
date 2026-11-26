@@ -37,6 +37,9 @@ if (process.env.EST_KIND) for (const [k, v] of Object.entries(JSON.parse(process
 // 足す速い列車（停車駅を減らした列車）: 元の路線の停車駅がこれ以上のときに足す・巡航速度・運転間隔（分）
 // share: 乗降客数が路線の駅のうち上位この割合の駅に止まる。transfer: 乗換駅（2路線以上）にも必ず止まるか
 const EXPRESS = { minStops: 12, speed: 75, interval: 15, share: 0.4, transfer: true, ...(process.env.EST_EXPRESS ? JSON.parse(process.env.EST_EXPRESS) : {}) };
+// もう 1 段速い列車（快特にあたる）: 停車駅の多い長い路線（minStops 以上）に、乗降客数が上位 share の駅だけに止まる列車も足す。
+// 長い区間は停車駅の少ないこちらが速く、所要時間の計算では区間ごとに速い方が使われる
+const EXPRESS2 = { minStops: 25, speed: 70, interval: 20, share: 0.2, transfer: false, ...(process.env.EST_EXPRESS2 ? JSON.parse(process.env.EST_EXPRESS2) : {}) };
 // 列車の種別・愛称の relation の名前を、凡例で分かりやすい路線の名前にまとめる（同じ名前の路線どうしは乗換なしで乗り継げる）
 const LINE_ALIAS = [
     // 京急は本線・支線・快特などを 1 つの路線にまとめる（時刻表データの京急と同じく、乗り換えずに乗り継げる）
@@ -363,17 +366,23 @@ function build(raw) {
             };
             if (L.patterns.some(q => q !== p && !q.express && q.stops.length >= 3 && q.stops.length <= p.stops.length * 0.75 && covers(q))) continue;
             // 止まる駅: 始発・終点、乗換駅（2つ以上の路線が止まる駅）、同じ路線の分岐駅（隣の駅が 3 つ以上）
-            //   ＋ 乗降客数が多い駅（この列車の駅のうち上位 EXPRESS.share）。乗降客数の分からない駅は数えない
+            //   ＋ 乗降客数が多い駅（この列車の駅のうち上位 share）。乗降客数の分からない駅は数えない
             const counts = p.pts.map(s => riders(s.name, s)).filter(n => n != null).sort((a, b) => b - a);
-            const cut = counts.length ? counts[Math.max(0, Math.ceil(counts.length * EXPRESS.share) - 1)] : Infinity;
-            const keep = p.pts.filter((s, i) => i === 0 || i === p.pts.length - 1 || (EXPRESS.transfer && stationPos[s.name].lines.size >= 2) ||
-                (nb[s.name]?.size || 0) >= 3 || (riders(s.name, s) ?? -1) >= cut);
-            if (keep.length < 3 || keep.length > p.stops.length * 0.8) continue;
-            const t = runTimes(keep, EXPRESS.speed, KIND.train.stop);
-            // 普通列車より遅くならないように
-            const local = Object.fromEntries(p.stops.map((s, i) => [s, p.times[i]]));
-            const times = keep.map((s, i) => Math.min(t[i], local[s.name] - local[keep[0].name]));
-            L.patterns.push({ stops: keep.map(s => s.name), times, interval: EXPRESS.interval, express: true });
+            const added = new Set();
+            for (const X of [EXPRESS, EXPRESS2]) {
+                if (p.stops.length < X.minStops || X.speed <= 0) continue;
+                const cut = counts.length ? counts[Math.max(0, Math.ceil(counts.length * X.share) - 1)] : Infinity;
+                const keep = p.pts.filter((s, i) => i === 0 || i === p.pts.length - 1 || (X.transfer && stationPos[s.name].lines.size >= 2) ||
+                    (nb[s.name]?.size || 0) >= 3 || (riders(s.name, s) ?? -1) >= cut);
+                const key = keep.map(s => s.name).join('|');
+                if (keep.length < 3 || keep.length > p.stops.length * 0.8 || added.has(key)) continue;
+                added.add(key);
+                const t = runTimes(keep, X.speed, KIND.train.stop);
+                // 普通列車より遅くならないように
+                const local = Object.fromEntries(p.stops.map((s, i) => [s, p.times[i]]));
+                const times = keep.map((s, i) => Math.min(t[i], local[s.name] - local[keep[0].name]));
+                L.patterns.push({ stops: keep.map(s => s.name), times, interval: X.interval, express: true });
+            }
         }
     }
 
