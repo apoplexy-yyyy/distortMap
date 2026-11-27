@@ -26,7 +26,7 @@ const BBOX = { s: 35.12, w: 138.9, n: 35.68, e: 139.8 };
 
 // 路線の種類ごとの目安：巡航速度（km/h）、1駅あたりの停車・加減速（分）、運転間隔（分）
 const KIND = {
-    train: { speed: 75, stop: 0.5, interval: 10 },   // 停車 0.5 分・速い列車 75km/h が時刻表データと最も合った（平均の差 3.2 分）
+    train: { speed: 65, stop: 0.5, interval: 10 },   // 65km/h・停車 0.5 分が時刻表データと最も合った（平均の差 2.6 分）
     subway: { speed: 55, stop: 0.7, interval: 6 },
     light_rail: { speed: 40, stop: 0.6, interval: 8 },
     monorail: { speed: 45, stop: 0.6, interval: 8 },
