@@ -323,12 +323,24 @@ function build(raw) {
         const scale = f >= 0.6 && f <= 1.6 ? f : 1;
         const times = runTimes(seq, k.speed, k.stop).map(t => t * scale);
         const interval = Math.max(3, Math.min(30, Math.round(minutesOf(r.tags.interval) || k.interval)));
-        (lines[name] = lines[name] || { kind, patterns: [] }).patterns.push({ stops: seq.map(s => s.name), times, interval, pts: seq });
+        (lines[name] = lines[name] || { kind, patterns: [] }).patterns.push({ stops: seq.map(s => s.name), times, interval, pts: seq, tagged: !!minutesOf(r.tags.interval) });
         for (const s of seq) {
             const o = (stationPos[s.name] = stationPos[s.name] || { lat: 0, lng: 0, n: 0, lines: new Set() });
             o.lat += s.lat; o.lng += s.lng; o.n++; o.lines.add(name);
         }
     }
+
+    // 本数: OSM の interval は路線（その向き）全体の間隔と考え、同じ駅を同じ向きに半分以上通る relation が複数あれば分け合う
+    // （横浜線は東神奈川発・桜木町発の各停と快速の 3 つにどれも 8 分とあり、そのままだと 1 時間に 20 本以上になる）。
+    // interval の無い relation は路線の種類ごとの目安のまま
+    const sameWay = (p, q) => {
+        const common = p.stops.filter(s => q.stops.includes(s));
+        if (common.length < Math.min(p.stops.length, q.stops.length) * 0.5 || common.length < 2) return false;
+        return q.stops.indexOf(common[0]) < q.stops.indexOf(common[common.length - 1]);
+    };
+    for (const L of Object.values(lines))
+        for (const p of L.patterns) if (p.tagged) p.share = L.patterns.filter(q => q.tagged && sameWay(p, q)).length;
+    for (const L of Object.values(lines)) for (const p of L.patterns) if (p.share > 1) p.interval = Math.min(60, p.interval * p.share);
 
     // OSM の停車駅の並びが入れ違っている relation がある（相鉄新横浜線の「西谷→新横浜→羽沢横浜国大」など）。
     // 同じ路線に同じ駅の組の relation（反対向き）があり、そちらの並びの方が距離が短ければ、その逆向きの並びを使う
@@ -362,11 +374,17 @@ function build(raw) {
         for (const p of [...L.patterns]) {
             if (p.stops.length < EXPRESS.minStops) continue;
             // 路線の 6 割以上を通る列車だけを数える（「矢向〜川崎」のような短い区間の列車は急行ではない）
-            const covers = q => {
-                const idx = q.stops.map(s => p.stops.indexOf(s));
-                return idx.every(i => i >= 0) && Math.abs(idx[idx.length - 1] - idx[0]) >= p.stops.length * 0.6;
+            // p の区間に重なる部分だけで見る（横浜線の快速は桜木町・横浜も通るが、東神奈川発の各停の快速でもある）
+            // q が base より停車駅の少ない列車か
+            const isFaster = (q, base) => {
+                const idx = q.stops.map(s => base.stops.indexOf(s)).filter(i => i >= 0);
+                if (idx.length < 3) return false;
+                const span = Math.abs(idx[idx.length - 1] - idx[0]);
+                return span >= base.stops.length * 0.6 && idx.length <= (span + 1) * 0.75;
             };
-            if (L.patterns.some(q => q !== p && !q.express && q.stops.length >= 3 && q.stops.length <= p.stops.length * 0.75 && covers(q))) continue;
+            if (L.patterns.some(q => q !== p && !q.express && isFaster(q, p))) continue;
+            // p 自体が急行・快速の relation なら足さない（横浜線の快速から、さらに速い列車を作らない）
+            if (L.patterns.some(q => q !== p && !q.express && isFaster(p, q))) continue;
             // 止まる駅: 始発・終点、乗換駅（2つ以上の路線が止まる駅）、同じ路線の分岐駅（隣の駅が 3 つ以上）
             //   ＋ 乗降客数が多い駅（この列車の駅のうち上位 share）。乗降客数の分からない駅は数えない
             const counts = p.pts.map(s => riders(s.name, s)).filter(n => n != null).sort((a, b) => b - a);
