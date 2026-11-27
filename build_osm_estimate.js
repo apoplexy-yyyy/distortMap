@@ -480,7 +480,10 @@ function build(raw) {
         const idx = Object.fromEntries(stations.map((s, i) => [s, i]));
         const trains = [];
         for (const p of L.patterns) {
-            for (let t0 = DAY_START + (p.phase || 0); t0 <= DAY_END; t0 += p.interval) {
+            // 本数の少ない時刻表の列車の型は、時刻表で走る時刻にだけ。ほかは一定の間隔で
+            const starts = p.fixed ? p.fixed.filter(t => t >= DAY_START && t <= DAY_END) : [];
+            if (!p.fixed) for (let t0 = DAY_START + (p.phase || 0); t0 <= DAY_END; t0 += p.interval) starts.push(t0);
+            for (const t0 of starts) {
                 trains.push([p.express ? 'est-fast' : 'est', p.stops.flatMap((s, i) => [idx[s], Math.round((t0 + p.times[i]) * 10) / 10])]);
             }
         }

@@ -136,9 +136,15 @@ function fitTimetableSpeeds(estLines, normName, km) {
 //   停車駅の並びが同じ列車をまとめ、WINDOW（10〜15 時）に始発駅を出た本数から運転間隔を、
 //   所要時間はその列車たちの中央値を使う。推定の路線の駅の 8 割以上が時刻表にある路線だけが対象（COVER）。
 //   1 つの推定の路線の駅だけを通る列車はその路線の列車に、複数の路線にまたがる列車（相鉄の横浜〜湘南台など）は
-//   最初の区間の路線の「直通」の列車（線は描かない）にする
-//   戻り値: { 推定の路線名: [{ stops, times, interval, first（最初の発車分）, express, through }] }
-const WINDOW = [600, 900], COVER = 0.8;
+//   最初の区間の路線の「直通」の列車（線は描かない）にする。
+//   WINDOW の本数が RARE 本未満の型（大師線から本線への直通など）は、等間隔で一日中走らせると実際よりずっと乗りやすくなるので、
+//   時刻表で走る時刻（始発駅の発車時刻）にだけ走らせる（fixed）
+//   戻り値: { 推定の路線名: [{ stops, times, interval, first（最初の発車分）, fixed?, express, through }] }
+const WINDOW = [600, 900], COVER = 0.8, RARE = 3;
+// 運転間隔は、ダイヤでよく使われる間隔のうち最も近いものにそろえ、発車の分（間隔で割った余り）は時刻表の発車に合わせる。
+// 「5 時間に 28 本 → 10.7 分おき」のような半端な間隔だと、一日のうちに発車時刻がずれていき、実際には無い
+// 待ち時間の短い乗り継ぎができてしまうため
+const HEADWAYS = [3, 4, 5, 6, 7.5, 8, 10, 12, 15, 20, 30, 60, 120];
 function timetablePatterns(estLines, normName) {
     const w = load(DATA_FILES);
     const out = {};
@@ -161,27 +167,35 @@ function timetablePatterns(estLines, normName) {
             return { type, stops, times };
         }).filter(t => t.stops.length >= 2);
         for (const t of trains) {
-            if (t.times[0] < WINDOW[0] || t.times[0] >= WINDOW[1]) continue;
             const key = t.stops.join('|');
-            if (!groups.has(key)) groups.set(key, { stops: t.stops, runs: [], types: [] });
+            if (!groups.has(key)) groups.set(key, { stops: t.stops, runs: [], types: [], starts: [] });
             const g = groups.get(key);
+            g.starts.push(t.times[0]);   // 一日の始発駅の発車時刻（本数の少ない型に使う）
+            if (t.times[0] < WINDOW[0] || t.times[0] >= WINDOW[1]) continue;
             g.runs.push(t.times.map(x => x - t.times[0]));
             g.types.push(t.type);
             g.first = Math.min(g.first ?? Infinity, t.times[0]);
         }
         for (const g of groups.values()) {
+            if (!g.runs.length) continue;   // 日中に走らない型（朝・夜だけの列車）は使わない
             const times = g.stops.map((_, i) => {
                 const v = g.runs.map(r => r[i]).sort((a, b) => a - b);
                 return v[Math.floor((v.length - 1) / 2)];
             });
-            const interval = Math.max(3, Math.min(120, (WINDOW[1] - WINDOW[0]) / g.runs.length));
+            const raw = (WINDOW[1] - WINDOW[0]) / g.runs.length;
+            const interval = HEADWAYS.reduce((b, h) => (Math.abs(Math.log(h / raw)) < Math.abs(Math.log(b / raw)) ? h : b));
+            // 発車の分: 日中の発車時刻を間隔で割った余りの、円周上の平均
+            const ang = g.starts.filter(t => t >= WINDOW[0] && t < WINDOW[1]).map(t => (t % interval) / interval * 2 * Math.PI);
+            const mean = Math.atan2(ang.reduce((a, x) => a + Math.sin(x), 0), ang.reduce((a, x) => a + Math.cos(x), 0));
+            const offset = ((mean / (2 * Math.PI)) * interval + interval) % interval;
             const types = g.types.filter(x => x in TYPE_TIER);
             const express = types.length ? types.some(x => TYPE_TIER[x] > 0) : g.stops.length < Math.max(...trains.map(t => t.stops.length)) * 0.75;
             // 1 つの路線に収まるか
             const home = lines.find(([, set]) => g.stops.every(s => set.has(s)))?.[0];
             const name = home || lineOf(g.stops[0], g.stops[1]);
             if (!name) continue;
-            (out[name] = out[name] || []).push({ stops: g.stops, times, interval, first: g.first, express, through: !home });
+            const fixed = g.runs.length < RARE ? g.starts.sort((a, b) => a - b) : undefined;
+            (out[name] = out[name] || []).push({ stops: g.stops, times, interval, first: WINDOW[0] - (WINDOW[0] % interval) + offset, fixed, express, through: !home });
         }
         for (const [n] of lines) out[n] = out[n] || [];
     }
