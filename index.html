@@ -12,7 +12,7 @@
         <div class="toolbar" id="toolbar">
             <header title="中心駅からの所要時間・運賃で駅の位置を歪めて表示（方角は地図と同じ）">
                 <!-- バージョン名は更新したらここを書き換える -->
-                <h1>時間地図・運賃地図<small class="app-version">v1.0.52</small></h1>
+                <h1>時間地図・運賃地図<small class="app-version">v1.0.53</small></h1>
             </header>
             <!-- スマホ（幅 640px 以下）だけ表示。押すと「設定」の項目を開く -->
             <button id="menuBtn" class="menu-btn" type="button" aria-expanded="false" aria-controls="toolbar">設定</button>
@@ -61,6 +61,16 @@
                     <label><input type="radio" name="dataSrc" value="timetable" checked><span>時刻表</span></label>
                     <label title="OpenStreetMap の路線から推定した所要時間（神奈川県全域・鉄道だけ・運賃なし）"><input type="radio" name="dataSrc" value="osm"><span>推定</span></label>
                 </div>
+            </div>
+
+            <!-- 交通手段: 電車と、車（OpenStreetMap の幹線道路を道路交通センサスの平均速度で走る目安。data/car.js） -->
+            <div class="control-group">
+                <span id="travelLabel">交通</span>
+                <div id="travel" class="segmented" role="radiogroup" aria-labelledby="travelLabel">
+                    <label><input type="radio" name="travel" value="train" checked><span>電車</span></label>
+                    <label title="幹線道路を道路交通センサスの昼間の平均速度で走るとした目安（駅から駅）"><input type="radio" name="travel" value="car"><span>車</span></label>
+                </div>
+                <label id="highwayToggle" class="highway-toggle" title="高速道路（有料）を使う" hidden><input type="checkbox" id="useHighway" checked>高速</label>
             </div>
 
             <div class="control-group secondary">
@@ -124,6 +134,7 @@
     <!-- ランドマークの既定のマイマップ（ユーザーが編集） -->
     <!-- OpenStreetMap の路線から推定した時刻表（build_osm_estimate.js。© OpenStreetMap contributors, ODbL） -->
     <script src="data/osm_estimate.js"></script>
+    <script src="data/car.js"></script>
     <script src="data/landmark_presets.js"></script>
     <!-- 既定のマイマップの KML（build_landmarks.py で取り込み。index.html を直接開いたときに使う） -->
     <script src="data/landmarks_kml.js"></script>

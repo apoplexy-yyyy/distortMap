@@ -60,6 +60,8 @@ header h1 {
 #basemapOpacity { width: 80px; }
 
 /* 歪めモード: 3 つの選択肢を並べて常に表示 */
+.highway-toggle { font-size: 12px; white-space: nowrap; }
+.highway-toggle[hidden], .depart-group[hidden] { display: none; }
 .segmented {
     display: inline-flex;
     border: 1px solid #007bff;

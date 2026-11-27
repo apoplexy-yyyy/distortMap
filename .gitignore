@@ -30,3 +30,4 @@ data/debug/
 
 # OpenStreetMap から取得した途中の結果（build_osm_estimate.js が作り直せる）
 osm_rail/
+osm_road/

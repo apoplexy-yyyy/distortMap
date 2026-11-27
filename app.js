@@ -96,6 +96,8 @@ let routeData = {};         // centerId -> { stationId: { time, fare, source } |
 const hiddenLines = new Set();   // 凡例のクリックで隠した路線（表示用の路線名。徒歩連絡は「徒歩」）
 let dayType = 'weekday';    // 'weekday'（平日ダイヤ）か 'holiday'（土休日ダイヤ）
 let departTime = null;      // 出発時刻（0 時からの分。0:00〜3:59 は 24:00〜27:59）。null は日中（10〜15 時台）の値
+let travel = 'train';       // 交通手段: 'train'（電車）・'car'（車。data/car.js の駅×駅の表）
+let useHighway = true;      // 車で高速道路（有料）を使うか
 let timeStat = 'min';       // 出発時刻を決めないときの値: 'min'（最小。既定）・'median'（平均）・'max'（最大）
 
 let svg, rootLayer, ringLayer, linkSel, nodeSel, labelSel;
@@ -544,6 +546,7 @@ function routesFor(centerName) {
 }
 function computeRouteData(cid) {
     if (routeData[cid]) return routeData[cid];
+    if (travel === 'car' && window.CAR) return (routeData[cid] = carRouteData(cid));
     const center = stations.find(s => s.id === cid);
     const result = { [cid]: { time: 0, fare: 0 } };
     const { routes, cheap } = routesFor(center.name);
@@ -569,6 +572,22 @@ function computeRouteData(cid) {
     return (routeData[cid] = result);
 }
 
+// 車: data/car.js の駅×駅の表（所要時間・費用の目安）から。バス停は使わない
+function carRouteData(cid) {
+    const C = window.CAR, tbl = useHighway ? C.highway : C.local;
+    const idx = Object.fromEntries(C.stations.map((n, i) => [n, i]));
+    const i = idx[stations.find(s => s.id === cid).name];
+    const result = { [cid]: { time: 0, fare: 0 } };
+    stations.forEach(s => {
+        if (s.id === cid) return;
+        const j = idx[s.name];
+        result[s.id] = i == null || j == null ? null
+            : { time: tbl.time[i][j], fare: tbl.cost[i][j], fareNote: useHighway ? '高速料金とガソリン代の目安' : 'ガソリン代の目安（高速道路を使わない）' };
+    });
+    busStops.forEach(b => { result[b.id] = null; });
+    return result;
+}
+
 // 時間の基準の表示（例「 8:30 発（土休日）」。日中の平均なら土休日のときだけ「（土休日）」）
 const DAY_NAMES = { weekday: '平日', holiday: '土休日' };
 function fmtClock(min) {
@@ -577,6 +596,7 @@ function fmtClock(min) {
 }
 const STAT_NAMES = { min: '', median: '日中の平均', max: '日中の最大' };   // 既定の最小は書かない
 function timeBasis() {
+    if (travel === 'car') return `（車${useHighway ? '' : '・高速なし'}）`;
     if (departTime != null) return ` ${fmtClock(departTime)} 発（${DAY_NAMES[dayType]}）`;
     const parts = [STAT_NAMES[timeStat], dayType === 'holiday' ? '土休日' : ''].filter(Boolean);
     return parts.length ? `（${parts.join('・')}）` : '';
@@ -587,6 +607,10 @@ function describeData(cid) {
     const total = stations.length - 1;
     const values = stations.filter(s => s.id !== cid).map(s => routeData[cid][s.id]);
     const withTime = values.filter(v => v && v.time != null).length;
+    if (travel === 'car') {
+        return setStatus(`車（OpenStreetMap の幹線道路を、道路交通センサスの神奈川県の昼間の平均速度で走るとした目安。渋滞の時間帯の違いは入らない）` +
+            `: ${center.name}${timeBasis()} から 時間 ${withTime} / ${total} 駅`, 'ok');
+    }
     if (ESTIMATE) {
         return setStatus(`推定（OpenStreetMap の路線と国土数値情報の線路の形から。所要時間は線路の距離・カーブ・停車駅数から、運転間隔は目安で計算）` +
             `: ${center.name}${timeBasis()} から 時間 ${withTime} / ${total} 駅` +
@@ -798,7 +822,7 @@ function updateLayout(animate = true, duration = 600) {
         .classed('center', d => d.id === centerId);
     applyZoomScale();
     tr(nodeSel).attr('cx', X).attr('cy', Y);
-    const busShown = d => (hiddenLines.has(d.label) ? 'none' : null);
+    const busShown = d => (travel === 'car' || hiddenLines.has(d.label) ? 'none' : null);   // 車のときはバスを出さない
     busSel.style('display', busShown).attr('fill', d => (d.missing ? '#bbb' : d.color));
     busHitSel.style('display', busShown);
     busLinkSel.style('display', busShown);
@@ -1000,7 +1024,7 @@ function showTooltip(event, d) {
         info += `<div class="tooltip-info"><strong>直線距離:</strong> ${d.geo.r.toFixed(1)} km</div>`;
         if (rd) {
             info += `<div class="tooltip-info"><strong>${center.name}${timeBasis()}から:</strong> ${rd.time != null ? rd.time + '分' : '—'} / ${rd.fare != null ? rd.fare + '円' : '—'}</div>`;
-            if (rd.fareNote) info += `<div class="tooltip-hint">運賃（IC）: ${rd.fareNote}</div>`;
+            if (rd.fareNote) info += `<div class="tooltip-hint">${travel === 'car' ? '費用' : '運賃（IC）'}: ${rd.fareNote}</div>`;
         } else {
             info += '<div class="tooltip-info">時間・運賃データなし</div>';
         }
@@ -1173,6 +1197,15 @@ function stopDepartPlay() {
     clearInterval(departTimer);
     departTimer = null;
     setDepartPlayButton(false);
+}
+// 車のときは出発時刻・ダイヤ（電車の時刻表の設定）を隠し、高速道路の切り替えを出す。推定（電車だけ）や
+// 車のデータが無いときは車を選べない
+function updateTravelUI() {
+    const car = travel === 'car';
+    document.querySelector('.depart-group').hidden = car;
+    document.getElementById('highwayToggle').hidden = !car;
+    const carInput = document.querySelector('input[name="travel"][value="car"]');
+    carInput.disabled = !window.CAR || ESTIMATE;
 }
 function updateDepartLabel() {
     document.getElementById('departClear').hidden = departTime == null;
@@ -1457,6 +1490,14 @@ function setupControls() {
     });
     document.getElementById('day').addEventListener('change', e => { dayType = e.target.value; recompute(); });
     document.getElementById('timeStat').addEventListener('change', e => { timeStat = e.target.value; recompute(); });
+    // 交通手段（電車／車）と、車の高速道路の有無
+    document.getElementById('travel').addEventListener('change', e => {
+        travel = e.target.value;
+        stopDepartPlay();
+        updateTravelUI();
+        recompute();
+    });
+    document.getElementById('useHighway').addEventListener('change', e => { useHighway = e.target.checked; recompute(); });
 
     // スマホ: 「設定」で操作バーの残りの項目、「凡例」で凡例を開く（地図の高さが変わるので描き直す）
     const toggleOpen = (btn, el) => btn.addEventListener('click', () => {
@@ -1504,6 +1545,8 @@ function readShareState() {
         zoom: z.length === 3 && z.every(isFinite) && z[0] > 0 ? z : null,
         ranking: ['open', 'closed'].includes(p.get('lr')) ? p.get('lr') : null,
         landmarkPanel: p.get('lp') === '1',
+        travel: p.get('tr') === 'car' ? 'car' : 'train',
+        highway: p.get('hw') !== '0',
         departTime: /^\d{4}$/.test(p.get('dt') || '') ? parseClock(`${p.get('dt').slice(0, 2)}:${p.get('dt').slice(2)}`) : null,
         day: p.get('day') === 'holiday' ? 'holiday' : 'weekday',
         timeStat: ['median', 'max'].includes(p.get('st')) ? p.get('st') : 'min',
@@ -1526,6 +1569,8 @@ function writeShareState() {
     if (departTime != null) p.set('dt', fmtClock(departTime).padStart(5, '0').replace(':', ''));
     if (dayType === 'holiday') p.set('day', 'holiday');
     if (timeStat !== 'min') p.set('st', timeStat);
+    if (travel === 'car') p.set('tr', 'car');
+    if (travel === 'car' && !useHighway) p.set('hw', '0');
     if (ESTIMATE) p.set('src', 'osm');
     const t = d3.zoomTransform(svg.node());
     if (t.k !== 1 || t.x || t.y) p.set('z', [+t.k.toFixed(3), Math.round(t.x), Math.round(t.y)].join(','));
@@ -1556,6 +1601,11 @@ function init() {
     dayType = share.day;
     departTime = share.departTime;
     timeStat = share.timeStat;
+    travel = window.CAR && !ESTIMATE ? share.travel : 'train';
+    useHighway = share.highway;
+    document.querySelector(`input[name="travel"][value="${travel}"]`).checked = true;
+    document.getElementById('useHighway').checked = useHighway;
+    updateTravelUI();
     document.getElementById('timeStat').value = timeStat;
     document.querySelector(`input[name="day"][value="${dayType}"]`).checked = true;
     document.getElementById('departTime').value = departTime != null ? fmtClock(departTime).padStart(5, '0') : '';
