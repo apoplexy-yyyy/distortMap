@@ -39,7 +39,8 @@ if (process.env.EST_KIND) for (const [k, v] of Object.entries(JSON.parse(process
 const EXPRESS = { minStops: 12, speed: 75, interval: 15, share: 0.4, transfer: true, ...(process.env.EST_EXPRESS ? JSON.parse(process.env.EST_EXPRESS) : {}) };
 // もう 1 段速い列車（快特にあたる）: 停車駅の多い長い路線（minStops 以上）に、乗降客数が上位 share の駅だけに止まる列車も足す。
 // 長い区間は停車駅の少ないこちらが速く、所要時間の計算では区間ごとに速い方が使われる
-const EXPRESS2 = { minStops: 25, speed: 70, interval: 20, share: 0.2, transfer: false, ...(process.env.EST_EXPRESS2 ? JSON.parse(process.env.EST_EXPRESS2) : {}) };
+// stop: 1 駅ごとの停車・加減速（分）。長めにして速さを上げると、止まらずに走る長い区間ほど速くなる
+const EXPRESS2 = { minStops: 25, speed: 90, stop: 1.5, interval: 20, share: 0.2, transfer: false, ...(process.env.EST_EXPRESS2 ? JSON.parse(process.env.EST_EXPRESS2) : {}) };
 // 列車の種別・愛称の relation の名前を、凡例で分かりやすい路線の名前にまとめる（同じ名前の路線どうしは乗換なしで乗り継げる）
 const LINE_ALIAS = [
     // 京急は本線・支線・快特などを 1 つの路線にまとめる（時刻表データの京急と同じく、乗り換えずに乗り継げる）
@@ -50,6 +51,7 @@ const LINE_ALIAS = [
     [/^(踊り子|ふじさん|あずさ|ひたち)$/, n => '特急' + n],
     [/シーサイドライン/, '金沢シーサイドライン'],
     [/^JR中央線JC$/, 'JR中央線'],
+    [/^横須賀・総武快速線$/, '横須賀線'],   // OSM では東京〜大船と大船〜久里浜が別の路線
     [/^横浜高速鉄道みなとみらい21線$/, 'みなとみらい線'],
 ];
 // 路線をまたぐ直通運転: [路線, 路線, つなぐ駅]
@@ -377,7 +379,7 @@ function build(raw) {
                 const key = keep.map(s => s.name).join('|');
                 if (keep.length < 3 || keep.length > p.stops.length * 0.8 || added.has(key)) continue;
                 added.add(key);
-                const t = runTimes(keep, X.speed, KIND.train.stop);
+                const t = runTimes(keep, X.speed, X.stop ?? KIND.train.stop);
                 // 普通列車より遅くならないように
                 const local = Object.fromEntries(p.stops.map((s, i) => [s, p.times[i]]));
                 const times = keep.map((s, i) => Math.min(t[i], local[s.name] - local[keep[0].name]));
@@ -414,7 +416,8 @@ function build(raw) {
     for (const L of Object.values(lines)) {
         const starts = new Set(L.patterns.map(q => q.stops[0]));
         for (const J of starts)
-            if (L.patterns.some(p => p.stops.indexOf(J) > 0 && p.stops.indexOf(J) < p.stops.length - 1)) joinAt(L, [...L.patterns], [...L.patterns], J);
+            // J を途中で通る列車か、J で終わる列車があれば（横須賀線の東京〜大船と大船〜久里浜など）
+            if (L.patterns.some(p => p.stops.indexOf(J) > 0)) joinAt(L, [...L.patterns], [...L.patterns], J);
     }
     for (const [a, b, J] of THROUGH) {
         if (!lines[a] || !lines[b]) { console.warn('直通運転の路線が見つかりません:', a, b); continue; }
