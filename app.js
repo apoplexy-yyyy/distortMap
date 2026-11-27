@@ -588,7 +588,7 @@ function describeData(cid) {
     const values = stations.filter(s => s.id !== cid).map(s => routeData[cid][s.id]);
     const withTime = values.filter(v => v && v.time != null).length;
     if (ESTIMATE) {
-        return setStatus(`推定（OpenStreetMap の路線から。駅間の距離・路線の種類から所要時間を、運転間隔は目安で計算）` +
+        return setStatus(`推定（OpenStreetMap の路線から。時刻表データのある路線は時刻表の停車駅・所要時間・本数を、ほかは駅間の距離・路線の種類から所要時間を、運転間隔は目安で計算）` +
             `: ${center.name}${timeBasis()} から 時間 ${withTime} / ${total} 駅` +
             (withTime === total ? '' : '。行けない駅は実際の位置に灰色で表示'), 'ok');
     }
