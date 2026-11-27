@@ -5,10 +5,11 @@
 //   node build_osm_estimate.js --cached … 保存済みの osm_rail/raw.json から作り直す
 //
 //   入力: OSM の路線（type=route, route=train/subway/light_rail/monorail/tram）の停車駅の並び
-//   推定: 駅間の所要時間 = 直線距離 × 1.15 ÷ 巡航速度 ＋ 1駅ごとの停車・加減速の時間（路線の種類ごと）
-//         時刻表データ（data/keikyu.js など）でほぼ全駅が分かる路線は、時刻表の列車の型（停車駅・駅間の所要時間・本数）を使い、
-//         一部の駅だけ分かる路線は、時刻表から求めた路線・種別ごとの速さと停車時間を使う（fit_timetable_speeds.js）。
-//         推定と時刻表のずれは compare_estimate.js で確かめる
+//   推定: 駅間の所要時間 = a × 線路に沿った距離 ＋ b（停車・加減速） ＋ c × カーブの量（鉄道・地下鉄）
+//         線路の距離とカーブは国土数値情報の線路の形（N02）から（track_geometry.js）。a・b・c は路線の種類と
+//         各停／速い列車ごとに、calibrate_estimate.js で時刻表データから一度だけ求めた値（est_calibration.json）。
+//         時刻表データは較正と答え合わせ（compare_estimate.js）にだけ使い、推定の停車駅・時刻には入れない。
+//         線路の形が無い区間と、路面電車・モノレール・新交通は 直線距離 × 1.15 ÷ 巡航速度 ＋ 1駅ごとの停車時間
 //         OSM に始発から終点までの所要時間（duration タグ）があれば、それに合うように全体を伸び縮みさせる
 //         列車は 6〜20 時に一定の間隔（OSM の interval タグ、無ければ路線の種類ごとの目安）で走るものとする
 //         急行・快速などの路線（停車駅の少ない relation）も OSM にあれば、そのまま速い列車として入る。
@@ -20,7 +21,7 @@
 // =====================================================================
 const fs = require('fs');
 const path = require('path');
-const { fitTimetableSpeeds, timetablePatterns } = require('./fit_timetable_speeds');
+const { loadTrack } = require('./track_geometry');
 
 const RAW = path.join(__dirname, 'osm_rail', 'raw.json');
 const OUT = path.join(__dirname, 'data', 'osm_estimate.js');
@@ -180,9 +181,20 @@ function ridershipLookup() {
 }
 const normName = s => (s || '').replace(/(?<=[一-鿿])ケ(?=[一-鿿])/g, 'ヶ').replace(/\s+/g, '').replace(/駅$/, '').replace(/[（(].*?[）)]$/, '');
 // 駅の並びの、始発からの所要時間（分）: 直線距離 × 1.15 ÷ 巡航速度 ＋ 1駅ごとの停車・加減速
-const runTimes = (list, speed, stop) => {
+// 較正した式（est_calibration.json）と線路の形（build の始めに読む）
+const CALIB = fs.existsSync(path.join(__dirname, 'est_calibration.json')) ? JSON.parse(fs.readFileSync(path.join(__dirname, 'est_calibration.json'), 'utf8')) : {};
+let TRACK = null;
+// kind・tier（'local' / 'fast'）の較正があれば、線路に沿った距離とカーブの式で。無ければ直線距離と速さの目安で
+const runTimes = (list, speed, stop, kind = null, tier = 'local') => {
+    const m = kind && (CALIB[kind]?.[tier] || CALIB[kind]?.local);
     const t = [0];
-    for (let i = 1; i < list.length; i++) t.push(t[i - 1] + (km(list[i - 1], list[i]) * 1.15 / speed) * 60 + stop);
+    for (let i = 1; i < list.length; i++) {
+        const straight = km(list[i - 1], list[i]);
+        if (!m) { t.push(t[i - 1] + (straight * 1.15 / speed) * 60 + stop); continue; }
+        const g = TRACK && TRACK.hop(list[i - 1], list[i]);
+        const ok = g && g.km <= straight * 1.8 + 0.5;   // 線路でつながらない・遠回りしすぎのときは直線距離から
+        t.push(t[i - 1] + (ok ? m.a * g.km + m.b + m.c * g.turn : m.a * straight * 1.15 + m.b));
+    }
     return t;
 };
 // OSM の停車駅の並びが崩れている relation を直す（相模線・東海道線などで、並びがばらばらだったり、
@@ -244,6 +256,8 @@ function fixOrder(stops) {
 const inBox = p => p.lat >= BBOX.s && p.lat <= BBOX.n && p.lng >= BBOX.w && p.lng <= BBOX.e;
 
 function build(raw) {
+    TRACK = loadTrack(BBOX);
+    if (!TRACK) console.warn('  ksj/N02 の線路のデータが無いので、直線距離で計算します');
     const nodes = new Map();
     const routes = [];
     const masters = [];
@@ -321,11 +335,11 @@ function build(raw) {
         if (seq.length < 2 || !seq.some(inKanagawa)) continue;
         const k = KIND[kind];
         // OSM の所要時間（始発〜終点）があれば、全区間の推定がそれに合うように伸び縮みさせる（極端な値は使わない）
-        const full = runTimes(stops, k.speed, k.stop);
+        const full = runTimes(stops, k.speed, k.stop, kind);
         const dur = minutesOf(r.tags.duration);
         const f = dur && full[full.length - 1] > 0 ? dur / full[full.length - 1] : 1;
         const scale = f >= 0.6 && f <= 1.6 ? f : 1;
-        const times = runTimes(seq, k.speed, k.stop).map(t => t * scale);
+        const times = runTimes(seq, k.speed, k.stop, kind).map(t => t * scale);
         const interval = Math.max(3, Math.min(30, Math.round(minutesOf(r.tags.interval) || k.interval)));
         (lines[name] = lines[name] || { kind, patterns: [] }).patterns.push({ stops: seq.map(s => s.name), times, interval, pts: seq, tagged: !!minutesOf(r.tags.interval) });
         for (const s of seq) {
@@ -358,18 +372,8 @@ function build(raw) {
             p.pts = pts;
             p.stops = pts.map(s => s.name);
             const k = KIND[L.kind];
-            p.times = runTimes(pts, k.speed, k.stop);
+            p.times = runTimes(pts, k.speed, k.stop, L.kind);
         }
-    }
-
-    // 時刻表データでほぼ全駅が分かる路線は、OSM の relation の代わりに時刻表の列車の型（停車駅・駅間の所要時間・本数）を使う
-    // （fit_timetable_speeds.js の timetablePatterns）。速い列車も時刻表にあるので足さない
-    const lineSets = () => Object.fromEntries(Object.entries(lines).map(([n, L]) => [n, new Set(L.patterns.flatMap(q => q.stops))]));
-    for (const [name, pats] of Object.entries(timetablePatterns(lineSets(), normName))) {
-        if (!pats.length) continue;
-        lines[name].patterns = pats.map(q => ({ ...q, phase: ((q.first - DAY_START) % q.interval + q.interval) % q.interval }));
-        lines[name].fromTimetable = true;
-        console.log(`  時刻表の列車: ${name} ${pats.length} 種類`);
     }
 
     // 速い列車を足す: 停車駅の多い relation しか無い長い路線に、乗換駅と終点だけに止まる列車を足す。
@@ -377,7 +381,7 @@ function build(raw) {
     // 各駅停車しか走らない路線には足さない
     const LOCAL_ONLY = /根岸線|京浜東北|鶴見線|相模線|御殿場線|江ノ島電鉄|こどもの国線|大雄山線|箱根登山|多摩川線|池上線|世田谷線|南武支線|大師線|逗子線|多摩線/;
     for (const [name, L] of Object.entries(lines)) {
-        if (L.kind !== 'train' || L.fromTimetable || EXPRESS.speed <= 0 || LOCAL_ONLY.test(name)) continue;
+        if (L.kind !== 'train' || EXPRESS.speed <= 0 || LOCAL_ONLY.test(name)) continue;
         // 停車駅の多い列車ごとに、その列車の停車駅だけを通る停車駅の少ない列車（急行など）が OSM にまだ無ければ足す
         // 駅名 -> この路線で隣になる駅（どれかの列車で間に駅がある組は、急行が飛ばしているので数えない）
         const far = new Set();
@@ -411,26 +415,12 @@ function build(raw) {
                 const key = keep.map(s => s.name).join('|');
                 if (keep.length < 3 || keep.length > p.stops.length * 0.8 || added.has(key)) continue;
                 added.add(key);
-                const t = runTimes(keep, X.speed, X.stop ?? KIND.train.stop);
+                const t = runTimes(keep, X.speed, X.stop ?? KIND.train.stop, 'train', 'fast');
                 // 普通列車より遅くならないように
                 const local = Object.fromEntries(p.stops.map((s, i) => [s, p.times[i]]));
                 const times = keep.map((s, i) => Math.min(t[i], local[s.name] - local[keep[0].name]));
-                L.patterns.push({ stops: keep.map(s => s.name), times, interval: X.interval, express: true, pts: keep });
+                L.patterns.push({ stops: keep.map(s => s.name), times, interval: X.interval, express: true });
             }
-        }
-    }
-
-    // 時刻表データのある路線は、路線ごと・種別ごとに時刻表から求めた速さと停車時間で所要時間を計算し直す
-    // （fit_timetable_speeds.js）。列車の種別は、駅間の平均の長さが最も近い種別とする（停車駅の少ない列車ほど長い）
-    const fits = fitTimetableSpeeds(lineSets(), normName, km);
-    for (const [name, tiers] of Object.entries(fits)) {
-        if (lines[name].fromTimetable) continue;
-        console.log(`  時刻表から: ${name} ` + tiers.map(t => `${['各停', '急行', '特急'][t.tier]} ${t.speed}km/h・停車${t.stop}分`).join('、'));
-        for (const p of lines[name].patterns) {
-            if (!p.pts || p.pts.length < 2) continue;
-            const meanKm = p.pts.slice(1).reduce((a, s, i) => a + km(p.pts[i], s), 0) / (p.pts.length - 1);
-            const t = tiers.reduce((b, x) => (Math.abs(Math.log(x.meanKm / meanKm)) < Math.abs(Math.log(b.meanKm / meanKm)) ? x : b));
-            p.times = runTimes(p.pts, t.speed, t.stop);
         }
     }
 
@@ -460,7 +450,6 @@ function build(raw) {
         for (const o of out) { const k = o.stops.join("|"); if (!have.has(k)) { have.add(k); A.patterns.push(o); } }
     };
     for (const L of Object.values(lines)) {
-        if (L.fromTimetable) continue;   // 時刻表の列車には、実際に走る直通列車がもう入っている
         const starts = new Set(L.patterns.map(q => q.stops[0]));
         for (const J of starts)
             // J を途中で通る列車か、J で終わる列車があれば（横須賀線の東京〜大船と大船〜久里浜など）
@@ -480,10 +469,7 @@ function build(raw) {
         const idx = Object.fromEntries(stations.map((s, i) => [s, i]));
         const trains = [];
         for (const p of L.patterns) {
-            // 本数の少ない時刻表の列車の型は、時刻表で走る時刻にだけ。ほかは一定の間隔で
-            const starts = p.fixed ? p.fixed.filter(t => t >= DAY_START && t <= DAY_END) : [];
-            if (!p.fixed) for (let t0 = DAY_START + (p.phase || 0); t0 <= DAY_END; t0 += p.interval) starts.push(t0);
-            for (const t0 of starts) {
+            for (let t0 = DAY_START; t0 <= DAY_END; t0 += p.interval) {
                 trains.push([p.express ? 'est-fast' : 'est', p.stops.flatMap((s, i) => [idx[s], Math.round((t0 + p.times[i]) * 10) / 10])]);
             }
         }
