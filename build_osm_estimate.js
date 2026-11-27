@@ -17,7 +17,8 @@
 //   範囲: 神奈川県内に駅のある路線だけ（県内かどうかは、国土数値情報のバス停留所 P11 が 1km 以内にあるかで見る）
 //   出力: data/osm_estimate.js … window.OSM_EST = { network: { lines, stations, edges }, lines: { 路線名: { stations, trains } } }
 //         network は data/network.js と同じ形（駅の位置・路線のつながりの表示用）
-//   データ: © OpenStreetMap contributors（ODbL）、国土数値情報（駅別乗降客数 S12・バス停留所 P11、CC BY 4.0）
+//   データ: © OpenStreetMap contributors（ODbL）、国土数値情報（鉄道 N02・駅別乗降客数 S12・バス停留所 P11、CC BY 4.0）、
+//         Wikipedia（種別ごとの停車駅・本数、CC BY-SA 4.0、wiki_stops.json）
 // =====================================================================
 const fs = require('fs');
 const path = require('path');
@@ -76,6 +77,11 @@ const RIDERSHIP = path.join(__dirname, 'ksj', 'S12-23', 'UTF-8', 'S12-23_NumberO
 // 県内の判定に使うバス停留所（国土数値情報 P11・神奈川県）
 const KANAGAWA_STOPS = path.join(__dirname, 'ksj', 'P11-22_14_SHP');
 const DAY_START = 6 * 60, DAY_END = 20 * 60;
+// Wikipedia の種別ごとの停車駅・本数（build_wiki_stops.js で作る）
+const WIKI = fs.existsSync(path.join(__dirname, 'wiki_stops.json')) ? JSON.parse(fs.readFileSync(path.join(__dirname, 'wiki_stops.json'), 'utf8')) : {};
+const WIKI_INTERVAL = [15, 20, 30], WIKI_INTERVAL_RANGE = [10, 30];
+// 列車の型の発車の分はそろえたまま（6 時ちょうどから）。型ごとにばらすと、実際のダイヤ（各停と速い列車が
+// 接続するように組まれている）より乗り継ぎが悪くなり、時刻表とのずれが大きくなった（差の平均 2.00 分 → 2.22 分）
 
 // 問い合わせごとの結果を保存しておき、途中で失敗しても次は続きから取る（サーバーが混んでいて失敗しやすいため）
 async function overpass(q) {
@@ -376,12 +382,44 @@ function build(raw) {
         }
     }
 
+    // Wikipedia の駅一覧にある種別（急行・快特など）の停車駅で速い列車を作る（wiki_stops.json、build_wiki_stops.js）。
+    // 読めた路線は、下の「乗降客数で停車駅を選ぶ」方法の代わりに使う。朝夕だけの種別（通勤急行など）は使わない。
+    // 本数は記事の運行本数の表から（WIKI_INTERVAL_RANGE に収める）。読めなければ停車駅の多い種別から順に WIKI_INTERVAL
+    for (const [name, info] of Object.entries(WIKI.lines || {})) {
+        const L = lines[name];
+        if (!L) continue;
+        const types = info.types.filter(t => !/^通勤/.test(t.name)).sort((a, b) => b.stops.length - a.stops.length);
+        if (!types.length) continue;
+        L.wiki = true;
+        const added = new Set(L.patterns.map(q => q.stops.join('|')));
+        const bases = L.patterns.filter(q => !q.express && q.pts && q.stops.length >= 6);
+        const k = KIND[L.kind] || KIND.train;
+        types.forEach((ty, rank) => {
+            const set = new Set(ty.stops.map(normName));
+            const interval = ty.perHour ? Math.max(WIKI_INTERVAL_RANGE[0], Math.min(WIKI_INTERVAL_RANGE[1], Math.round(60 / ty.perHour))) : WIKI_INTERVAL[Math.min(rank, WIKI_INTERVAL.length - 1)];
+            for (const p of bases) {
+                const keep = p.pts.filter(st => set.has(normName(st.name)));
+                const key = keep.map(st => st.name).join('|');
+                if (keep.length < 3 || keep.length > p.stops.length * 0.9 || added.has(key)) continue;
+                // 間で駅を飛ばしていなければ、普通列車と同じなので足さない
+                const i0 = p.stops.indexOf(keep[0].name), i1 = p.stops.indexOf(keep[keep.length - 1].name);
+                if (i1 - i0 + 1 <= keep.length) continue;
+                added.add(key);
+                const t = runTimes(keep, k.speed, k.stop, L.kind, 'fast');
+                const local = Object.fromEntries(p.stops.map((x, i) => [x, p.times[i]]));
+                const times = keep.map((st, i) => Math.min(t[i], local[st.name] - local[keep[0].name]));   // 普通列車より遅くならないように
+                L.patterns.push({ stops: keep.map(st => st.name), times, interval, express: true });
+            }
+        });
+        console.log(`  Wikipedia の停車駅: ${name} ` + types.map(t => t.name + (t.perHour ? `（毎時${+t.perHour.toFixed(1)}本）` : '')).join('・'));
+    }
+
     // 速い列車を足す: 停車駅の多い relation しか無い長い路線に、乗換駅と終点だけに止まる列車を足す。
     // 乗換駅 = 2つ以上の路線が止まる駅
     // 各駅停車しか走らない路線には足さない
     const LOCAL_ONLY = /根岸線|京浜東北|鶴見線|相模線|御殿場線|江ノ島電鉄|こどもの国線|大雄山線|箱根登山|多摩川線|池上線|世田谷線|南武支線|大師線|逗子線|多摩線/;
     for (const [name, L] of Object.entries(lines)) {
-        if (L.kind !== 'train' || EXPRESS.speed <= 0 || LOCAL_ONLY.test(name)) continue;
+        if (L.kind !== 'train' || L.wiki || EXPRESS.speed <= 0 || LOCAL_ONLY.test(name)) continue;
         // 停車駅の多い列車ごとに、その列車の停車駅だけを通る停車駅の少ない列車（急行など）が OSM にまだ無ければ足す
         // 駅名 -> この路線で隣になる駅（どれかの列車で間に駅がある組は、急行が飛ばしているので数えない）
         const far = new Set();
@@ -536,7 +574,7 @@ function build(raw) {
 (async () => {
     const raw = process.argv.includes('--cached') && fs.existsSync(RAW) ? JSON.parse(fs.readFileSync(RAW, 'utf8')) : await fetchRaw();
     const out = build(raw);
-    fs.writeFileSync(OUT, `// ${new Date().toISOString()} に build_osm_estimate.js で生成（© OpenStreetMap contributors, ODbL／国土数値情報 駅別乗降客数 S12・バス停留所 P11, CC BY 4.0）\nwindow.OSM_EST = ${JSON.stringify(out)};\n`);
+    fs.writeFileSync(OUT, `// ${new Date().toISOString()} に build_osm_estimate.js で生成（© OpenStreetMap contributors, ODbL／国土数値情報 鉄道 N02・駅別乗降客数 S12・バス停留所 P11, CC BY 4.0／Wikipedia, CC BY-SA 4.0）\nwindow.OSM_EST = ${JSON.stringify(out)};\n`);
     const nTrains = Object.values(out.lines).reduce((a, l) => a + l.trains.length, 0);
     console.log(`路線 ${out.network.lines.length}・駅 ${out.network.stations.length}・区間 ${out.network.edges.length}・列車 ${nTrains} → ${OUT}（${(fs.statSync(OUT).size / 1024).toFixed(0)}KB）`);
     console.log(out.network.lines.join('、'));

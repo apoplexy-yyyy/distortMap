@@ -690,7 +690,11 @@ function initSvg() {
     d3.select(mapEl).append('div').attr('class', 'attribution')
         .html('地図: <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院（淡色地図）</a>'
             + ' / ランドマークの一部: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>'
-            + ' / 京急バス: <a href="https://nlftp.mlit.go.jp/ksj/" target="_blank" rel="noopener">国土数値情報（バス停留所・バスルート）</a>（国土交通省）を加工して作成');
+            + ' / 京急バス: <a href="https://nlftp.mlit.go.jp/ksj/" target="_blank" rel="noopener">国土数値情報（バス停留所・バスルート）</a>（国土交通省）を加工して作成'
+            // 推定の時刻表: OSM の路線、国土数値情報の線路の形・駅別乗降客数、Wikipedia の種別ごとの停車駅・本数
+            + (ESTIMATE ? ' / 推定: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>・'
+                + '<a href="https://nlftp.mlit.go.jp/ksj/" target="_blank" rel="noopener">国土数値情報（鉄道・駅別乗降客数）</a>・'
+                + '<a href="https://ja.wikipedia.org/" target="_blank" rel="noopener">Wikipedia</a>（CC BY-SA、各路線の記事の停車駅）' : ''));
     zoomBehavior = d3.zoom().scaleExtent([0.3, 64]).on('end', writeShareState).on('zoom', e => {
         rootLayer.attr('transform', e.transform);
         BaseMap.setTransform(e.transform);
