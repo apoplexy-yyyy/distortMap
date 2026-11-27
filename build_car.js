@@ -223,6 +223,56 @@ function main() {
         if (i >= 0 && j >= 0) console.log(`  ${a}→${b}: 高速あり ${highway.time[i][j]} 分・${highway.cost[i][j]} 円 / 高速なし ${local.time[i][j]} 分・${local.cost[i][j]} 円`);
     }
     console.log(`駅 ${N} → ${OUT}（${(fs.statSync(OUT).size / 1024).toFixed(0)} KB）`);
+    exportGraph(pts, adj, access);
+}
+
+// ブラウザでランドマークまでの経路を計算するための、道路網の軽い版 → data/car_graph.js（車でランドマークを出すときだけ読む）
+// 交差点（つながる点が 2 つでない点）と駅の近くの点だけを残し、間の点は 1 本の辺にまとめる
+function exportGraph(pts, adj, access) {
+    const und = adj.map(() => new Set());
+    adj.forEach((list, u) => list.forEach(([v]) => { und[u].add(v); und[v].add(u); }));
+    const keep = new Uint8Array(pts.length);
+    und.forEach((s, i) => { if (s.size !== 2) keep[i] = 1; });
+    access.forEach(a => { if (a.node >= 0) keep[a.node] = 1; });
+    const kid = new Int32Array(pts.length).fill(-1);
+    let K = 0;
+    keep.forEach((k, i) => { if (k) kid[i] = K++; });
+    // 辺: [元, 先, 分, km, 有料の km, 印（1: 最初が有料、2: 最後が有料）]
+    const edges = [];
+    for (let u = 0; u < pts.length; u++) {
+        if (!keep[u]) continue;
+        for (const [v0, m0, k0, t0] of adj[u]) {
+            let prev = u, v = v0, min = m0, km = k0, tk = t0 ? k0 : 0, last = t0, guard = 0;
+            while (!keep[v] && guard++ < 100000) {
+                const nx = adj[v].find(([w]) => w !== prev);
+                if (!nx) break;
+                prev = v; v = nx[0]; min += nx[1]; km += nx[2]; if (nx[3]) tk += nx[2]; last = nx[3];
+            }
+            if (keep[v] && v !== u) edges.push([kid[u], kid[v], min, km, tk, (t0 ? 1 : 0) | (last ? 2 : 0)]);
+        }
+    }
+    edges.sort((a, b) => a[0] - b[0]);
+    const off = new Int32Array(K + 1);
+    for (const e of edges) off[e[0] + 1]++;
+    for (let i = 0; i < K; i++) off[i + 1] += off[i];
+    const enc = arr => Buffer.from(arr.buffer).toString('base64');
+    const lat = new Int32Array(K), lng = new Int32Array(K);
+    keep.forEach((k, i) => { if (k) { lng[kid[i]] = Math.round(pts[i][0] * 1e5); lat[kid[i]] = Math.round(pts[i][1] * 1e5); } });
+    const out = {
+        n: K, lat: enc(lat), lng: enc(lng), off: enc(off),
+        to: enc(Int32Array.from(edges, e => e[1])),
+        min: enc(Float32Array.from(edges, e => e[2])),
+        km: enc(Float32Array.from(edges, e => e[3])),
+        tollKm: enc(Float32Array.from(edges, e => e[4])),
+        flag: enc(Uint8Array.from(edges, e => e[5])),
+        stationNode: access.map(a => (a.node >= 0 ? kid[a.node] : -1)),
+        stationAccess: access.map(a => [+a.min.toFixed(2), +a.km.toFixed(3)]),
+        accessKmh: ACCESS_KMH, tollPerKm: TOLL_PER_KM, tollBase: TOLL_BASE, fuelPerKm: FUEL_PER_KM,
+    };
+    const file = path.join(__dirname, 'data', 'car_graph.js');
+    fs.writeFileSync(file, `// build_car.js で生成（道路: © OpenStreetMap contributors, ODbL／速さ: 国土交通省 道路交通センサス 令和3年度）。` +
+        `数値の配列は base64（lat・lng は 10 万倍の整数）\nwindow.CAR_GRAPH = ${JSON.stringify(out)};\n`);
+    console.log(`  ブラウザ用の道路網: 点 ${K}・辺 ${edges.length} → ${file}（${(fs.statSync(file).size / 1024).toFixed(0)} KB）`);
 }
 
 main();

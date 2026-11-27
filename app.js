@@ -1087,9 +1087,8 @@ function showLandmarkTooltip(event, d) {
     const where = [d.mapTitle, d.layerName].filter(Boolean).map(escapeHtml).join(' / ');
     let info = '';
     if (a) {
-        const walk = `${placeName(a.station)}から徒歩 約${Math.round(a.walk)}分`;
         info = `<div class="tooltip-info"><strong>${center.name}${timeBasis()}から:</strong> ${a.time != null ? Math.round(a.time) + '分' : '—'} / ${a.fare != null ? a.fare + '円' : '—'}</div>
-            <div class="tooltip-hint">${walk}（直線距離の1.3倍を分速80mで歩くとして計算）</div>`;
+            <div class="tooltip-hint">${landmarkWay(a, true)}${a.car ? '（費用は高速料金とガソリン代の目安）' : '（直線距離の1.3倍を分速80mで歩くとして計算）'}</div>`;
     }
     d3.select('body').append('div').attr('class', 'tooltip').html(`
         <div class="tooltip-title">${escapeHtml(d.name)}</div>
@@ -1246,8 +1245,96 @@ function nearStations(lm) {
 // 「〜駅」「〜（中心駅）」「〜（バス停）」
 const placeName = s => s.name + (s.isBus ? '（バス停）' : s.id === centerId ? '（中心駅）' : '駅');
 
-// 中心駅からの時間（電車＋徒歩）が最も短い近い駅。時間が分からなければ最も近い駅
+// --- 車のときのランドマーク: 道路網（data/car_graph.js）で、中心駅からランドマークの近くの道路まで走る時間を計算する ---
+// 道路網は大きいので、車でランドマークを出すときに初めて読む
+let carGraph = null, carGraphLoading = false;
+const carRuns = new Map();   // 「中心駅|高速の有無」 -> 道路網の各点までの { dist, km, tollKm, entries }
+function ensureCarGraph() {
+    if (carGraph || carGraphLoading) return;
+    if (window.CAR_GRAPH) { carGraph = decodeCarGraph(window.CAR_GRAPH); return; }
+    carGraphLoading = true;
+    const sc = document.createElement('script');
+    sc.src = 'data/car_graph.js';
+    sc.onload = () => { carGraph = decodeCarGraph(window.CAR_GRAPH); carGraphLoading = false; updateLayout(false); };
+    sc.onerror = () => { carGraphLoading = false; setStatus('車の道路網（data/car_graph.js）を読めませんでした', 'error'); };
+    document.head.appendChild(sc);
+}
+function decodeCarGraph(g) {
+    const dec = (s, T) => {
+        const b = atob(s), u = new Uint8Array(b.length);
+        for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
+        return new T(u.buffer);
+    };
+    const G = { ...g, lat: dec(g.lat, Int32Array), lng: dec(g.lng, Int32Array), off: dec(g.off, Int32Array), to: dec(g.to, Int32Array),
+        min: dec(g.min, Float32Array), km: dec(g.km, Float32Array), tollKm: dec(g.tollKm, Float32Array), flag: dec(g.flag, Uint8Array), grid: new Map() };
+    for (let i = 0; i < G.n; i++) {
+        const k = Math.floor(G.lng[i] / 1e5 * 90) + ',' + Math.floor(G.lat[i] / 1e5 * 110);
+        if (!G.grid.has(k)) G.grid.set(k, []);
+        G.grid.get(k).push(i);
+    }
+    return G;
+}
+// 中心駅から道路網の各点までの最短時間（Dijkstra）。有料の区間の距離・入った回数も数える（費用の目安用）
+function carRun(cid) {
+    const key = cid + '|' + useHighway;
+    if (carRuns.has(key)) return carRuns.get(key);
+    const G = carGraph, si = window.CAR.stations.indexOf(stations.find(s => s.id === cid).name);
+    const src = si >= 0 ? G.stationNode[si] : -1;
+    if (src < 0) return null;
+    const dist = new Float64Array(G.n).fill(Infinity), km = new Float64Array(G.n), tollKm = new Float64Array(G.n);
+    const entries = new Uint16Array(G.n), lastToll = new Uint8Array(G.n);
+    const heap = [[G.stationAccess[si][0], src]];
+    dist[src] = G.stationAccess[si][0]; km[src] = G.stationAccess[si][1];
+    const push = x => { heap.push(x); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+    const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+    while (heap.length) {
+        const [d, u] = pop();
+        if (d > dist[u]) continue;
+        for (let e = G.off[u]; e < G.off[u + 1]; e++) {
+            if (!useHighway && G.tollKm[e] > 0) continue;
+            const v = G.to[e], nd = d + G.min[e];
+            if (nd < dist[v]) {
+                dist[v] = nd; km[v] = km[u] + G.km[e]; tollKm[v] = tollKm[u] + G.tollKm[e];
+                entries[v] = entries[u] + ((G.flag[e] & 1) && !lastToll[u] ? 1 : 0);
+                lastToll[v] = G.flag[e] & 2 ? 1 : 0;
+                push([nd, v]);
+            }
+        }
+    }
+    const r = { dist, km, tollKm, entries };
+    carRuns.set(key, r);
+    if (carRuns.size > 20) carRuns.delete(carRuns.keys().next().value);
+    return r;
+}
+// ランドマークに最も近い道路網の点（約 3km まで）と、そこまでの時間（直線 × 1.3 を駅と同じ速さで）
+function carSnap(lm) {
+    if (lm.carSnap !== undefined) return lm.carSnap;
+    const G = carGraph, gx = Math.floor(lm.lng * 90), gy = Math.floor(lm.lat * 110);
+    let best = -1, bd = Infinity;
+    for (let r = 0; r <= 3 && best < 0; r++) for (let i = -r; i <= r; i++) for (let j = -r; j <= r; j++) {
+        for (const n of G.grid.get((gx + i) + ',' + (gy + j)) || []) {
+            const d = kmBetween(lm, { lat: G.lat[n] / 1e5, lng: G.lng[n] / 1e5 });
+            if (d < bd) { bd = d; best = n; }
+        }
+    }
+    return (lm.carSnap = best < 0 ? null : { node: best, km: bd * 1.3, min: bd * 1.3 / G.accessKmh * 60 });
+}
+function carLandmarkAccess(lm) {
+    ensureCarGraph();
+    if (!carGraph) return null;   // 読み込み中（読めたら描き直す）
+    const r = carRun(centerId), sn = carSnap(lm);
+    if (!r || !sn || !isFinite(r.dist[sn.node])) return { car: true, time: null, fare: null, walk: sn ? sn.min : 0 };
+    const G = carGraph, n = sn.node;
+    const fare = Math.round((r.tollKm[n] * G.tollPerKm + r.entries[n] * G.tollBase + (r.km[n] + sn.km) * G.fuelPerKm) / 10) * 10;
+    return { car: true, time: r.dist[n] + sn.min, fare, walk: sn.min };
+}
+// ランドマークまでの行き方の説明（「〜駅から徒歩◯分」・車のときは「車で最寄りの道路から◯分」）
+const landmarkWay = (a, long) => (a.car ? `車（最後は幹線道路から約${Math.round(a.walk)}分）`
+    : `${placeName(a.station)}から徒歩${long ? ' 約' : ''}${Math.round(a.walk)}分`);
+
+// 中心駅からの時間（電車＋徒歩）が最も短い近い駅。時間が分からなければ最も近い駅。車のときは車でランドマークまで
 function landmarkAccess(lm) {
+    if (travel === 'car' && window.CAR) return carLandmarkAccess(lm);
     if (!lm.near || !lm.near.length) return null;
     const rd = routeData[centerId] || {};
     const valueAt = s => (s.id === centerId ? { time: 0, fare: 0 } : rd[s.id]);
@@ -1317,7 +1404,7 @@ function renderLandmarkRanking() {
     const sub = r => {
         const parts = [currentMode === 'time' ? fmtFare(r.a) : fmtTime(r.a)];
         if (currentMode !== 'distance') parts.push(`${r.km.toFixed(1)}km`);
-        if (r.a) parts.push(`${placeName(r.a.station)}から徒歩${Math.round(r.a.walk)}分`);
+        if (r.a) parts.push(landmarkWay(r.a, false));
         return parts.join(' ・ ');
     };
     const basis = { time: '所要時間', cost: '運賃', distance: '直線距離' }[currentMode];
