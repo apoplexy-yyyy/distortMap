@@ -192,7 +192,7 @@ const OPERATORS = (ESTIMATE ? estimateOperators() : [
 function estimateOperators() {
     return Object.entries(window.OSM_EST.lines).map(([line, l]) => ({
         key: 'osm-' + line, label: line, dwell: 0,
-        data: { stations: l.stations, trains: l.trains, trainsHoliday: l.trains, fares: {} },
+        data: { stations: l.stations, trains: l.trains, trainsHoliday: l.trainsHoliday || l.trains, fares: {} },
     }));
 }
 // 運賃を通しで数える事業者どうしか（JR の路線どうし、東急の路線どうし。バスは 1 回ごと）

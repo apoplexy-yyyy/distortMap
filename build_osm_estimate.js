@@ -185,6 +185,41 @@ function ridershipLookup() {
         return best;
     };
 }
+// OSM の interval:conditional から、平日（weekday）・土休日（holiday）の、その時刻（分）の間隔を読む。
+// 書き方の例: "5 @ Sa-Su; 13 @ Mo-Fr 05:00-05:59; 4 @ Mo-Su 10:00-16:49"、"7 @ (Sa-Su 07:00-08:59; Mo-Su 08:20-09:50, 18:00-20:00)"
+// 当てはまる規則が無ければ null
+function intervalAt(tags, day, minute = 12 * 60) {
+    const s = (tags['interval:conditional'] || '').replace(/^interval:conditional=\s*/, '');
+    if (!s) return null;
+    // 括弧の外の「;」で規則に分ける
+    const rules = [];
+    let depth = 0, cur = '';
+    for (const ch of s) {
+        if (ch === '(') depth++;
+        if (ch === ')') depth--;
+        if (ch === ';' && depth === 0) { rules.push(cur); cur = ''; } else cur += ch;
+    }
+    rules.push(cur);
+    const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+    const dayOk = d => {
+        if (!d) return true;
+        if (/Mo-Su/.test(d)) return true;
+        return day === 'holiday' ? /Sa|Su|PH/.test(d) : /Mo|Tu|We|Th|Fr/.test(d);
+    };
+    for (const rule of rules) {
+        const m = rule.match(/^\s*(\d+(?:\.\d+)?)\s*@\s*\(?\s*(.*?)\s*\)?\s*$/);
+        if (!m) continue;
+        // 「Sa-Su 07:00-08:59; Mo-Su 08:20-09:50, 18:00-20:00」のように、括弧の中にも複数の組がある
+        for (const grp of m[2].split(';')) {
+            const g = grp.trim();
+            const d = (g.match(/^((?:Mo|Tu|We|Th|Fr|Sa|Su|PH)(?:[-,](?:Mo|Tu|We|Th|Fr|Sa|Su|PH))*)/) || [])[1] || '';
+            if (!dayOk(d)) continue;
+            const ranges = [...g.matchAll(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/g)];
+            if (!ranges.length || ranges.some(r => toMin(r[1]) <= minute && minute <= toMin(r[2]))) return Number(m[1]);
+        }
+    }
+    return null;
+}
 const normName = s => (s || '').replace(/(?<=[一-鿿])ケ(?=[一-鿿])/g, 'ヶ').replace(/\s+/g, '').replace(/駅$/, '').replace(/[（(].*?[）)]$/, '');
 // 駅の並びの、始発からの所要時間（分）: 直線距離 × 1.15 ÷ 巡航速度 ＋ 1駅ごとの停車・加減速
 // 較正した式（est_calibration.json）と線路の形（build の始めに読む）
@@ -346,8 +381,13 @@ function build(raw) {
         const f = dur && full[full.length - 1] > 0 ? dur / full[full.length - 1] : 1;
         const scale = f >= 0.6 && f <= 1.6 ? f : 1;
         const times = runTimes(seq, k.speed, k.stop, kind).map(t => t * scale);
-        const interval = Math.max(3, Math.min(30, Math.round(minutesOf(r.tags.interval) || k.interval)));
-        (lines[name] = lines[name] || { kind, patterns: [] }).patterns.push({ stops: seq.map(s => s.name), times, interval, pts: seq, tagged: !!minutesOf(r.tags.interval) });
+        // 間隔は昼（12 時）のもの。interval:conditional に平日・土休日の日中の間隔があればそれを使う
+        // （interval だけだと朝の混む時間の間隔のことが多い）
+        const base = minutesOf(r.tags.interval) || k.interval;
+        const clampI = v => Math.max(3, Math.min(30, Math.round(v)));
+        const interval = clampI(intervalAt(r.tags, 'weekday') ?? base);
+        const intervalH = clampI(intervalAt(r.tags, 'holiday') ?? intervalAt(r.tags, 'weekday') ?? base);
+        (lines[name] = lines[name] || { kind, patterns: [] }).patterns.push({ stops: seq.map(s => s.name), times, interval, intervalH, pts: seq, tagged: !!minutesOf(r.tags.interval) });
         for (const s of seq) {
             const o = (stationPos[s.name] = stationPos[s.name] || { lat: 0, lng: 0, n: 0, lines: new Set() });
             o.lat += s.lat; o.lng += s.lng; o.n++; o.lines.add(name);
@@ -364,7 +404,12 @@ function build(raw) {
     };
     for (const L of Object.values(lines))
         for (const p of L.patterns) if (p.tagged) p.share = L.patterns.filter(q => q.tagged && sameWay(p, q)).length;
-    for (const L of Object.values(lines)) for (const p of L.patterns) if (p.share > 1) p.interval = Math.min(60, p.interval * p.share);
+    for (const L of Object.values(lines))
+        for (const p of L.patterns)
+            if (p.share > 1) {
+                p.interval = Math.min(60, p.interval * p.share);
+                p.intervalH = Math.min(60, p.intervalH * p.share);
+            }
 
     // OSM の停車駅の並びが入れ違っている relation がある（相鉄新横浜線の「西谷→新横浜→羽沢横浜国大」など）。
     // 同じ路線に同じ駅の組の relation（反対向き）があり、そちらの並びの方が距離が短ければ、その逆向きの並びを使う
@@ -505,13 +550,20 @@ function build(raw) {
     for (const [name, L] of Object.entries(lines)) {
         const stations = [...new Set(L.patterns.flatMap(p => p.stops))];
         const idx = Object.fromEntries(stations.map((s, i) => [s, i]));
-        const trains = [];
-        for (const p of L.patterns) {
-            for (let t0 = DAY_START; t0 <= DAY_END; t0 += p.interval) {
-                trains.push([p.express ? 'est-fast' : 'est', p.stops.flatMap((s, i) => [idx[s], Math.round((t0 + p.times[i]) * 10) / 10])]);
+        // 平日の列車と、土休日の列車（間隔が平日と違う路線だけ。同じなら出さず、画面では平日の列車を使う）
+        const make = key => {
+            const out = [];
+            for (const p of L.patterns) {
+                const iv = p[key] ?? p.interval;
+                for (let t0 = DAY_START; t0 <= DAY_END; t0 += iv) {
+                    out.push([p.express ? 'est-fast' : 'est', p.stops.flatMap((s, i) => [idx[s], Math.round((t0 + p.times[i]) * 10) / 10])]);
+                }
             }
-        }
-        outLines[name] = { stations, trains, kind: L.kind };
+            return out;
+        };
+        const trains = make('interval');
+        const differs = L.patterns.some(p => p.intervalH != null && p.intervalH !== p.interval);
+        outLines[name] = { stations, trains, ...(differs ? { trainsHoliday: make('intervalH') } : {}), kind: L.kind };
     }
 
     // 表示用の駅と路線のつながり（network.js と同じ形）
